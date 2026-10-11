@@ -1,0 +1,343 @@
+"""Constants for the DeLonghi Coffee Link integration."""
+from __future__ import annotations
+
+DOMAIN = "delonghi_coffeelink"
+MANUFACTURER = "De'Longhi"
+
+# Where the device page's "Visit" link goes.
+#
+# NOT the machine's own IP, which is what this used to be. The Ayla Wi-Fi module
+# listens on port 80 but serves nothing: every path answers 404, so "Visit" was a
+# dead end on every machine, not just an unlucky one. There is no device web UI
+# to point at, so the link goes where it can actually help - the project, which
+# is also the only place to report what the machine did.
+#
+# Kept in step with `documentation` in manifest.json by a test.
+PROJECT_URL = "https://github.com/actabi/delonghi_coffeelink"
+
+# Extracted from Coffee Link APK v4.9.6
+APP_ID = "DLonghiCoffeeIdKit-sQ-id"
+APP_SECRET = "DLonghiCoffeeIdKit-HT6b0VNd4y6CSha9ivM5k8navLw"
+GIGYA_API_KEY = "3_e5qn7USZK-QtsIso1wCelqUKAK_IVEsYshRIssQ-X-k55haiZXmKWDHDRul2e5Y2"
+GIGYA_BASE_URL = "https://accounts.eu1.gigya.com"
+AYLA_EU_ADS_URL = "https://ads-eu.aylanetworks.com"
+AYLA_EU_USER_URL = "https://user-field-eu.aylanetworks.com"
+
+# Polling
+DEFAULT_SCAN_INTERVAL = 30  # seconds
+
+# Persistence of learned Eletta beverage frames (survives HA restarts).
+RECIPE_STORE_VERSION = 1
+RECIPE_STORE_SAVE_DELAY = 2  # seconds; debounce writes to disk
+
+# Property names vary by model:
+# - PrimaDonna Soul (DL-millcore): data_request / data_response / device_connected
+# - Eletta Explore (DL-striker-cb): app_data_request / app_data_response / app_device_connected
+# Listed in detection priority order.
+COMMAND_PROPERTY_CANDIDATES = ["data_request", "app_data_request"]
+RESPONSE_PROPERTY_CANDIDATES = ["data_response", "app_data_response"]
+CONNECTED_PROPERTY_CANDIDATES = ["device_connected", "app_device_connected"]
+
+# FALLBACK cloud-session id for app_device_connected (DlghIoT uses 0xC0FFEE11).
+# ECAM machines only execute commands from a session registered with THEIR OWN
+# 4-byte device signature, so the coordinator derives the real id from a learned
+# app frame (see command_builder.app_id_from_signature / issue #15). This
+# constant is only what we register with before any frame has been learned - a
+# session opened with it is accepted by Ayla and then ignored by the machine.
+INTEGRATION_CLOUD_APP_ID = 0xC0FFEE11
+
+APP_ID_PROPERTY = "app_id"  # machine property: current session holder
+CONNECT_REFRESH_INTERVAL = 240  # refresh before 4*60s (device timeout ~300s)
+# Soul-style monitor keepalive (issue #14). The machine publishes d302_monitor -
+# its live status - only when an app session is (re)written to `device_connected`;
+# it does NOT push status changes on its own. So this interval is not just a
+# session timeout guard, it is the status sensor's resolution.
+#
+# MUST stay strictly below DEFAULT_SCAN_INTERVAL. With the two equal, the
+# `now - last < INTERVAL` guard in the coordinator skipped roughly every other
+# poll: the keepalive is stamped a few hundred ms into a poll, so the next poll
+# arrives a hair under one interval later and the write slips a whole cycle.
+# Measured on the reference Soul - successive `device_connected` writes were
+# +61 / +30 / +31 / +60 s. Since this interval IS the status resolution, that
+# silently halved it. Half the interval keeps every scheduled poll carrying a
+# write while still rate-limiting refreshes triggered by button presses.
+MONITOR_KEEPALIVE_INTERVAL = DEFAULT_SCAN_INTERVAL // 2
+CONNECT_SETTLE_DELAY = 4  # sleep after POST connect (background tasks only)
+CONNECT_CONFIRM_TIMEOUT = 300  # poll app_id after POST (Eletta; can exceed 180s on bad cloud days)
+CONNECT_CONFIRM_POLL_INTERVAL = 1  # seconds between app_id polls during confirm
+
+# Every Ayla call is bounded. The session comes from Home Assistant
+# (async_get_clientsession), which inherits aiohttp's default ceiling of 300 s
+# total - not unbounded, but far too long here: a poll makes three calls, so a
+# stalled cloud could hold the integration for a quarter of an hour with nothing
+# surfaced, and the monitor keepalive writing every 15 s would queue behind it.
+# 30 s brings the worst case to about 90 s and lets the existing retry path do
+# its job instead.
+CLOUD_HTTP_TIMEOUT = 30  # seconds, per request
+
+# Ayla HTTP resilience (502/503/504 gateway timeouts seen on ads-eu.aylanetworks.com).
+CLOUD_HTTP_RETRY_COUNT = 2
+CLOUD_HTTP_RETRY_BACKOFF = 1.5  # seconds; multiplied by attempt index
+CLOUD_TRANSIENT_HTTP_CODES = frozenset({429, 502, 503, 504})
+# Second line of defence, behind the HTTP retry above: keep serving the last good
+# data for this many CONSECUTIVE failed polls before admitting the device is
+# unavailable (~2 min at a 30 s interval).
+#
+# A coordinator's failure blast radius is every entity it owns. One UpdateFailed
+# takes every non-numeric entity of the device `-> unavailable` and the next poll
+# writes them all back - and Home Assistant's logbook renders BOTH edges of a
+# `button` as "Pressed", because a button's state IS its last-press timestamp. So
+# a single gateway hiccup fabricates a full sweep of beverage presses that were
+# never made, on a machine whose lifetime counters never moved. Observed on
+# ECAM610.55: ten such blips in seven days, every one lasting exactly one poll.
+TRANSIENT_FAILURE_TOLERANCE = 3
+
+# Config
+CONF_EMAIL = "email"
+CONF_PASSWORD = "password"
+
+# CRC16 AUG-CCITT
+CRC_POLY = 0x1021
+CRC_INIT = 0x1D0F
+
+# Command structure
+CMD_PREFIX = 0x0d       # App -> machine
+CMD_RESPONSE_PREFIX = 0xd0  # Machine -> app
+CMD_LENGTH = 0x0d       # 13 bytes payload
+CMD_FAMILY_BREW = bytes([0x83, 0xf0])  # Brew beverage command family
+
+# Machine->app blob families. The machine wraps almost everything it stores in
+# the same `d0 <len> <family 2B> ... <crc16>` envelope, so the family bytes -
+# never the property name, which differs per model - say what a datapoint is.
+# See catalog.py for the grammar.
+BLOB_FAMILY_DESCRIPTOR = bytes([0xb0, 0xf0])       # factory min/default/max
+BLOB_FAMILY_PROFILE_RECIPE = bytes([0xa6, 0xf0])   # per-profile current values
+BLOB_FAMILY_PRIORITY = bytes([0xa8, 0xf0])         # per-profile ordered short list
+BLOB_FAMILY_PROFILE_NAMES = bytes([0xa4, 0xf0])
+BLOB_FAMILY_CUSTOM_NAMES = bytes([0xaa, 0xf0])
+BLOB_FAMILY_BEAN_NAMES = bytes([0xba, 0xf0])
+
+# The families that carry text the household typed in. Their structure is safe
+# to log; their content is a first name.
+TEXT_BLOB_FAMILIES = frozenset(
+    {BLOB_FAMILY_PROFILE_NAMES, BLOB_FAMILY_CUSTOM_NAMES, BLOB_FAMILY_BEAN_NAMES}
+)
+# The families the recipe diagnostic may render. Deliberately NOT the whole
+# 0xd0 envelope: the serial number (family a1 0f), the settings PIN (95 0f),
+# the monitor blob (75 0f) and the response channel (a9 f0) wear it too, and
+# that dump is meant to be pasted into public issue reports.
+DUMPABLE_BLOB_FAMILIES = frozenset(
+    {
+        BLOB_FAMILY_DESCRIPTOR,
+        BLOB_FAMILY_PROFILE_RECIPE,
+        BLOB_FAMILY_PRIORITY,
+        *TEXT_BLOB_FAMILIES,
+    }
+)
+
+# Eletta Explore (oem_model=DL-striker-cb) beverage frames carry a variable
+# length recipe block terminated by this 2-byte trailer, then the CRC. The Soul
+# (DL-millcore) frame has no trailer (fixed 6-byte recipe). See command_builder.
+ELETTA_RECIPE_TRAILER = bytes([0x01, 0x0a])
+# oem_model prefix of the Eletta Explore family (app_data_request channel).
+ELETTA_OEM_PREFIX = "DL-striker"
+
+# Actions
+ACTION_START = 0x01
+ACTION_STOP = 0x02
+
+# Power / Wake command family (0x84 0x0f)
+CMD_FAMILY_POWER = bytes([0x84, 0x0f])
+POWER_WAKE_PARAMS = bytes([0x02, 0x01])  # observed wake command payload
+# Standby (power off) payload - reported on Eletta (issue #1) and validated
+# live on the reference PrimaDonna Soul (machine powered off, 2026-06-07).
+POWER_STANDBY_PARAMS = bytes([0x01, 0x01])
+# Session refresh / deep-standby nudge (DlghIoT refresh(), params 03 02, CRC 5640).
+POWER_SESSION_REFRESH_PARAMS = bytes([0x03, 0x02])
+
+# Machine monitor - operational state published by the machine. Status codes
+# from the DlghIoT client (framagit.org/mattgk/dlghiot), contributed via PR #5.
+#
+# The datapoint name varies by model, like every other channel here: the Eletta
+# Explore publishes d302_monitor_machine while several Soul builds (ECAM610.55,
+# ECAM612.55) publish d302_monitor (issue #14). Listed in priority order, but
+# the coordinator only trusts a candidate whose blob actually DECODES: being
+# listed proves nothing (the reference Soul exposes a d303_monitor_extended it
+# never writes to) and carrying bytes proves nothing either (they could be a
+# stale or truncated packet).
+MONITOR_PROPERTY_CANDIDATES = ["d302_monitor_machine", "d302_monitor"]
+
+# How old the monitor datapoint may get before Machine Status stops asserting it.
+#
+# Polling proves the INTEGRATION is alive, never that the DATA is. The machine
+# publishes its monitor blob only when prompted (issue #14), so a machine whose
+# cloud link has wedged keeps `connection_status: Online`, keeps every entity
+# available, and keeps Machine Status reporting whatever it last said - for days.
+# Observed on a PrimaDonna Soul: the module answered ICMP and Ayla reported it
+# connected, while of 311 datapoints the only two written in 44 h were the two
+# the integration writes itself. Machine Status read a confident `standby`
+# throughout, and the automations keyed on it simply never fired.
+#
+# Ayla timestamps every datapoint with `data_updated_at`; this is the age past
+# which that timestamp is treated as evidence of silence rather than of standby.
+# Generous on purpose - it must clear a poll, the retry budget and a tolerated
+# run of transient failures without ever flapping.
+MONITOR_MAX_AGE = 6 * DEFAULT_SCAN_INTERVAL  # seconds
+
+# How long the cloud's connection_status is trusted enough to REFUSE a command.
+# The status only refreshes on a successful poll, so a cloud outage or a broken
+# poll loop freezes it: past this age the preflight fails open rather than
+# blaming the machine for what may well be the cloud's fault.
+REACHABILITY_MAX_AGE = 3 * DEFAULT_SCAN_INTERVAL  # seconds
+MACHINE_STATUS = {
+    0: "standby",
+    1: "waking_up",
+    2: "going_to_sleep",
+    4: "descaling",
+    5: "preparing_steam",
+    6: "recovering",
+    7: "ready",
+    8: "rinsing",
+    10: "preparing_milk",
+    11: "dispensing_hot_water",
+    12: "cleaning_milk",
+    16: "preparing_chocolate",
+    17: "preparing_milk_alt",
+    29: "unknown",
+}
+MACHINE_STATUS_OPTIONS = tuple(dict.fromkeys(MACHINE_STATUS.values()))
+CONNECTION_STATUS_OPTIONS = ("online", "offline", "unknown")
+
+
+def normalize_connection_status(value: object) -> str:
+    """Return a stable Home Assistant enum key for an Ayla connection value."""
+    normalized = str(value).strip().lower() if value is not None else ""
+    return normalized if normalized in CONNECTION_STATUS_OPTIONS else "unknown"
+
+# Default recipe params (from captured hot water command)
+# Bytes: temp_flag, reserved, quantity_low, quantity_high?, recipe_type, ???
+DEFAULT_RECIPE_PARAMS = bytes([0x0f, 0x00, 0xfa, 0x1b, 0x01, 0x06])
+
+# Beverage definitions: (bev_id, key, display_name, icon)
+BEVERAGES = [
+    (0x01, "espresso",        "Espresso",         "mdi:coffee"),
+    (0x02, "coffee",          "Coffee",           "mdi:coffee"),
+    (0x03, "long_coffee",     "Long Coffee",      "mdi:coffee-outline"),
+    (0x04, "double_espresso", "Double Espresso",  "mdi:coffee"),
+    (0x05, "doppio",          "Doppio+",          "mdi:coffee"),
+    (0x06, "americano",       "Americano",        "mdi:coffee"),
+    (0x07, "cappuccino",      "Cappuccino",       "mdi:coffee"),
+    (0x08, "latte_macchiato", "Latte Macchiato",  "mdi:coffee"),
+    (0x09, "caffelatte",      "Caffe Latte",      "mdi:coffee"),
+    (0x0a, "flat_white",      "Flat White",       "mdi:coffee"),
+    (0x0b, "espresso_macchiato", "Espresso Macchiato", "mdi:coffee"),
+    (0x0c, "hot_milk",        "Hot Milk",         "mdi:cup"),
+    (0x0d, "cappuccino_doppio", "Cappuccino Doppio+", "mdi:coffee"),
+    (0x0f, "cappuccino_reverse", "Cappuccino Reverse", "mdi:coffee"),
+    (0x10, "hot_water",       "Hot Water",        "mdi:water"),
+    (0x16, "tea",             "Tea",              "mdi:tea"),
+    (0x17, "coffee_pot",      "Coffee Pot",       "mdi:coffee-maker"),
+    (0x18, "cortado",         "Cortado",          "mdi:coffee"),
+    (0x19, "long_black",      "Long Black",       "mdi:coffee"),
+    (0x1a, "mug_to_go",       "Mug to Go",        "mdi:coffee-to-go"),
+    (0x1b, "brew_over_ice",   "Brew Over Ice",    "mdi:coffee"),
+]
+
+# Counter properties to expose as sensors:
+#   (candidate_property_names, entity_key, display_name, icon)
+# Property names differ between models; the first candidate present on the device
+# wins (same approach as COMMAND_PROPERTY_CANDIDATES). A sensor whose property is
+# absent on the device is not created (avoids permanently-"unknown" entities).
+#   - PrimaDonna Soul (DL-millcore): d700_tot_bev_b, d701_tot_bev_bw, d703_tot_bev_w, d825_descale_status
+#   - Eletta Explore (DL-striker-cb): d701_tot_bev_b (no milk/water/descale equivalents exposed)
+COUNTER_SENSORS = [
+    # The b / bw / w / other suffixes are BLACK / BLACK+WHITE / WHITE / OTHER --
+    # not "beverages" / "milk drinks" / "water". Verified by arithmetic against a
+    # live PrimaDonna Soul (2026-09-01): d700 == espresso 4 + coffee 4633 +
+    # doppio 1 == 4638 exactly, and d703 == hot_milk == 24 exactly. d700 is
+    # therefore NOT the machine's lifetime total; that is d700 + d701 + d703 +
+    # d702, which on the reference machine is 4917 against a "Total Beverages"
+    # sensor reading 4638.
+    (["d700_tot_bev_b", "d701_tot_bev_b"], "total_beverages",       "Total Black Beverages", "mdi:counter"),
+    (["d702_tot_bev_other"],               "total_other_beverages", "Total Other Beverages", "mdi:counter"),
+    (["d704_tot_bev_espressi"],            "total_espresso",        "Total Espresso",        "mdi:coffee"),
+    (["d701_tot_bev_bw"],                  "total_milk_drinks",     "Total Coffee + Milk Beverages", "mdi:cup"),
+    (["d703_tot_bev_w"],                   "total_water",           "Total Milk-Only Beverages", "mdi:cup-outline"),
+    (["d705_tot_id1_espr"],                "total_espresso_alt",    "Total Espresso Alt",    "mdi:coffee"),
+    (["d706_tot_id2_coffee"],              "total_coffee",          "Total Coffee",          "mdi:coffee"),
+    (["d707_tot_id3_long"],                "total_long_coffee",     "Total Long Coffee",     "mdi:coffee"),
+    (["d708_tot_id5_doppio_p"],            "total_doppio",          "Total Doppio+",         "mdi:coffee"),
+    (["d709_id6_americano"],               "total_americano",       "Total Americano",       "mdi:coffee"),
+    (["d710_tot_id7_capp"],                "total_cappuccino",      "Total Cappuccino",      "mdi:coffee"),
+    (["d711_id8_lattmacc"],                "total_latte_macchiato", "Total Latte Macchiato", "mdi:coffee"),
+    (["d712_id9_cafflatt"],                "total_caffelatte",      "Total Caffe Latte",     "mdi:coffee"),
+    (["d713_id10_flatwhite"],              "total_flat_white",      "Total Flat White",      "mdi:coffee"),
+    (["d714_id11_esprmacc"],               "total_espresso_macchiato", "Total Espresso Macchiato", "mdi:coffee"),
+    (["d715_id12_hotmilk"],                "total_hot_milk",        "Total Hot Milk",        "mdi:cup"),
+    (["d716_id13_cappdoppio_p"],           "total_cappuccino_doppio", "Total Cappuccino Doppio+", "mdi:coffee"),
+    (["d717_id15_caprev"],                 "total_cappuccino_reverse", "Total Cappuccino Reverse", "mdi:coffee"),
+    (["d718_id16_hotwater"],               "total_hot_water",       "Total Hot Water",       "mdi:water"),
+    (["d719_id22_tea"],                    "total_tea",             "Total Tea",             "mdi:tea"),
+    (["d720_tot_id23_coffee_pot"],         "total_coffee_pot",      "Total Coffee Pot",      "mdi:coffee-maker"),
+    # ids 24/25/26 have buttons in BEVERAGES and counters on the machine, but were
+    # never exposed - every other id from 1 to 27 was. Confirmed against a live
+    # PrimaDonna Soul, which publishes all three (id26 is the machine's name for
+    # the Mug to Go beverage, 0x1a).
+    (["d727_id24_cortado"],                "total_cortado",         "Total Cortado",         "mdi:coffee"),
+    (["d728_id25_long_black"],             "total_long_black",      "Total Long Black",      "mdi:coffee"),
+    (["d729_id26_travel_mug"],             "total_mug_to_go",       "Total Mug to Go",       "mdi:coffee-to-go"),
+    (["d730_tot_id27_brew_over_ice"],      "total_brew_over_ice",   "Total Brew Over Ice",   "mdi:coffee"),
+    # WARNING: the d-numbers below are NOT stable across models. On the reference
+    # PrimaDonna Soul these six numbers carry entirely different datapoints -
+    # d731_pregr_coff_cnt, d732_taste_b_bw, d735_b_water_qty,
+    # d736_bw_coff_water_qty, d737_bw_milk_time_qty, d738_espressi_water_qty.
+    # Matching is by EXACT full name, which is the only reason none of them are
+    # picked up and mislabelled. Never relax this to a prefix or a number.
+    (["d731_tot_mug_hot"],                 "total_mug_hot",         "Total Mug Hot",         "mdi:coffee-to-go"),
+    (["d732_tot_mug_cold"],                "total_mug_cold",        "Total Mug Cold",        "mdi:coffee-to-go"),
+    (["d735_iced_bev"],                    "total_iced_bev",        "Total Iced Beverages",  "mdi:snowflake"),
+    (["d736_mug_bev"],                     "total_mug_bev",         "Total Mug Beverages",   "mdi:coffee-to-go"),
+    (["d737_mug_iced_bev"],                "total_mug_iced_bev",    "Total Mug Iced Beverages", "mdi:snowflake"),
+    (["d738_cold_brew_bev"],               "total_cold_brew_bev",   "Total Cold Brew Beverages", "mdi:snowflake"),
+    (["d551_cnt_coffee_fondi"],            "grounds_counter",       "Grounds Counter",       "mdi:dots-grid"),
+    (["d552_cnt_calc_tot"],                "total_descales",        "Total Descales",        "mdi:water-pump"),
+    (["d553_water_tot_qty"],               "water_total_quantity",  "Water Total Quantity",  "mdi:water"),
+    (["d554_cnt_filter_tot"],              "total_filters_used",    "Total Filters Used",    "mdi:filter"),
+    (["d555_water_filter_qty"],            "water_filter_quantity", "Water Filter Quantity", "mdi:water-check"),
+    (["d825_descale_status"],              "descale_status",        "Descale Status",        "mdi:water-pump"),
+    (["d556_water_hardness"],              "water_hardness",        "Water Hardness",        "mdi:water-percent"),
+]
+
+# Counters that carry a physical quantity instead of a plain count.
+#
+# Keyed by the ENTITY key of COUNTER_SENSORS above, not by datapoint name: a
+# measurement is the same measurement whichever datapoint a given model happens
+# to publish it under, so a new machine is supported by adding its datapoint to
+# the candidate list of the matching row - never by touching sensor.py. Values
+# are opaque tokens (this module stays free of Home Assistant imports so the
+# protocol tests can import it standalone); sensor.py maps them to device
+# classes and units.
+MEASUREMENT_WATER_LITERS = "water_liters"
+
+# De'Longhi machines report water volumes in millilitres, while Home Assistant's
+# water device class works in litres. Confirmed against De'Longhi's own
+# statistics sheet, which is denominated in litres (see issue #19).
+COUNTER_MEASUREMENTS: dict[str, str] = {
+    "water_total_quantity": MEASUREMENT_WATER_LITERS,
+    "water_filter_quantity": MEASUREMENT_WATER_LITERS,
+}
+
+# Info sensors (not counters, general state):
+#   (candidate_property_names, entity_key, display_name, icon)
+# "Last Connected" is NOT here: it does not come from a datapoint at all but
+# from the cloud device record (see sensor.DelonghiLastConnectedSensor).
+INFO_SENSORS = [
+    (["software_version"], "software_version", "Software Version", "mdi:chip"),
+]
+
+PLATFORMS = ["sensor", "binary_sensor", "button"]
+
+# Service names
+SERVICE_SEND_RAW_COMMAND = "send_raw_command"
+SERVICE_START_BEVERAGE = "start_beverage"
+SERVICE_STOP_BEVERAGE = "stop_beverage"

@@ -1,0 +1,1190 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Accedi con il tuo account hOn",
+        "description": "Inserisci le credenziali dell'app Haier hOn. Le stesse email e password che usi sull'app mobile.\n\n⚠️ Questa integrazione è non ufficiale e usa le API hOn in modo non autorizzato da Haier.",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "auth_diagnostics": "Raccogli diagnostica dell'accesso"
+        },
+        "data_description": {
+          "auth_diagnostics": "In caso di errore registra nei log di Home Assistant dettagli tecnici sanitizzati. Credenziali, token e dati personali non vengono inclusi."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Ri-autentica il tuo account hOn",
+        "description": "Le credenziali per {email} non sono più valide. Inserisci di nuovo la password.",
+        "data": {
+          "password": "Password",
+          "auth_diagnostics": "Raccogli diagnostica dell'accesso"
+        },
+        "data_description": {
+          "auth_diagnostics": "In caso di errore registra nei log di Home Assistant dettagli tecnici sanitizzati. Credenziali, token e dati personali non vengono inclusi."
+        }
+      },
+      "2fa": {
+        "title": "Verifica in due passaggi",
+        "description": "Il tuo account hOn ha la verifica in due passaggi attiva. Inserisci il codice di verifica che ti abbiamo inviato via email. Per ricevere un nuovo codice, spunta \"Reinvia codice\" e invia.",
+        "data": {
+          "code": "Codice di verifica",
+          "resend": "Reinvia codice"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossibile connettersi ai server hOn. Controlla la connessione internet. ({error_code})",
+      "invalid_auth": "Credenziali non valide. Controlla email e password. ({error_code})",
+      "unknown": "Errore imprevisto. Controlla i log di Home Assistant. ({error_code})",
+      "invalid_credentials": "Email o password non validi. ({error_code})",
+      "auth_introduce": "Impossibile avviare il login hOn. ({error_code})",
+      "auth_login": "Login rifiutato: controlla email e password. ({error_code})",
+      "auth_get_token": "Impossibile recuperare il token di sessione hOn. ({error_code})",
+      "auth_api_auth": "hOn ha rifiutato l'autorizzazione API. ({error_code})",
+      "mfa_required": "È richiesto un codice di verifica per completare l'accesso. ({error_code})",
+      "mfa_code_invalid": "Il codice di verifica è errato o scaduto. Reinseriscilo o richiedine uno nuovo. ({error_code})",
+      "mfa_send_failed": "Impossibile inviare il codice di verifica. Attendi un momento e premi Reinvia. ({error_code})",
+      "mfa_service_error": "Il servizio di verifica ha avuto un problema temporaneo. Riprova il codice tra poco. ({error_code})",
+      "mfa_token_after_verify_failed": "Codice accettato ma l'accesso non si è completato. Riprova ad accedere da capo. ({error_code})",
+      "account_action_required": "La password è corretta, ma hOn chiede un passaggio aggiuntivo sull'account (per esempio una nuova password da impostare o condizioni da accettare). Accedi dal sito o dall'app hOn, completa il passaggio richiesto, poi riprova qui. ({error_code})",
+      "appliance_list_failed": "Impossibile recuperare la lista dei dispositivi. ({error_code})",
+      "network_timeout": "Timeout nel contattare i server hOn. Controlla la connessione internet. ({error_code})",
+      "auth_timeout": "Timeout durante l'accesso a hOn. I server sono lenti o la connessione si è interrotta. Riprova. ({error_code})",
+      "refresh_timeout": "Timeout durante il rinnovo della sessione hOn. Riprova tra poco. ({error_code})",
+      "dns_failure": "Impossibile risolvere i server hOn (DNS). Controlla rete e DNS. ({error_code})",
+      "tls_failure": "Errore TLS/certificato nel contattare hOn. Controlla data/ora di sistema e rete. ({error_code})",
+      "connection_refused": "Impossibile connettersi ai server hOn (rifiutata, interrotta o irraggiungibile). Controlla rete e firewall. ({error_code})",
+      "rate_limited": "Troppe richieste a hOn. Attendi qualche minuto e riprova. ({error_code})",
+      "server_error": "I server hOn hanno restituito un errore. Riprova più tardi. ({error_code})",
+      "loop_timeout": "Timeout durante la configurazione hOn. Controlla la connessione e riprova. ({error_code})",
+      "decode_error": "Risposta illeggibile dai server hOn. Riprova più tardi. ({error_code})"
+    },
+    "abort": {
+      "already_configured": "Questo account hOn è già configurato.",
+      "reauth_successful": "Ri-autenticazione completata.",
+      "reauth_account_mismatch": "Le nuove credenziali devono appartenere allo stesso account hOn.",
+      "reauth_entry_not_found": "La voce di configurazione non esiste più. Aggiungi di nuovo l'integrazione.",
+      "mfa_no_challenge": "La sessione di verifica in due passaggi è scaduta. Riprova da capo."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opzioni",
+        "data": {
+          "enable_debug": "Abilita log di debug",
+          "enable_mqtt_debug": "Abilita debug MQTT realtime",
+          "enable_experimental": "Abilita entità sperimentali"
+        },
+        "data_description": {
+          "enable_debug": "Porta il livello di log dell'integrazione a DEBUG (accesso, rilevamento dispositivi, polling, comandi). Disattiva per tornare al livello configurato in Home Assistant. Il rumore MQTT realtime resta silenziato a meno che non attivi il suo toggle.",
+          "enable_mqtt_debug": "Rende molto verboso il canale MQTT realtime. Di norma tienilo disattivato; copre solo il logger MQTT di questa integrazione, non le librerie AWS IoT sottostanti (per quelle usa la configurazione logger di Home Assistant).",
+          "enable_experimental": "Aggiunge entità il cui significato si basa su indizi incompleti: possono essere sbagliate, cambiare nome o sparire. Restano non disponibili per ogni lettura non confermata. Cambiare questa opzione ricarica l'integrazione."
+        }
+      }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Aggiorna ora",
+      "description": "Forza un polling immediato dal cloud per tutti gli account hOn configurati. L'equivalente richiamabile da automazione del pulsante \"Aggiorna ora\" per dispositivo: chiede a ogni coordinator caricato di recuperare subito i dati aggiornati, senza attendere il prossimo polling pianificato. Non richiede opzioni e si applica all'intera integrazione."
+    },
+    "set_log_level": {
+      "name": "Imposta livello log diagnostico",
+      "description": "Cambia il livello di log dell'integrazione Haier hOn e dei logger del client hOn nativo utili a diagnosticare login, discovery dispositivi, reauth e polling. Usa \"debug\" quando i dispositivi non appaiono, poi torna a \"warning\" per ridurre il rumore. Non abilita il rumore MQTT realtime: per quello usa il service dedicato set_mqtt_log_level.",
+      "fields": {
+        "level": {
+          "name": "Livello",
+          "description": "Livello di log diagnostico da applicare."
+        }
+      }
+    },
+    "set_mqtt_log_level": {
+      "name": "Imposta livello log MQTT",
+      "description": "Cambia il livello di log del canale MQTT realtime hOn. Di default il rumore dei tentativi di riconnessione è silenziato (warning). Imposta \"debug\" per diagnosticare i problemi di push realtime, poi \"warning\" per risilenziare. Non persiste: al riavvio di Home Assistant torna silenziato.",
+      "fields": {
+        "level": {
+          "name": "Livello",
+          "description": "Livello di log da applicare al canale MQTT realtime hOn."
+        }
+      }
+    }
+  },
+  "device": {
+    "diagnostics": {
+      "name": "addhOn diagnostica"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "state": {
+        "name": "Stato",
+        "state": {
+          "idle": "Inattivo",
+          "selection": "Selezione",
+          "running": "In esecuzione",
+          "paused": "In pausa",
+          "delayed_start": "Avvio ritardato",
+          "delayed_start_running": "Avvio ritardato (in corso)",
+          "error": "Errore",
+          "finished": "Terminato",
+          "test": "Test",
+          "stopped": "Arresto",
+          "keep_fresh": "Mantieni fresco"
+        }
+      },
+      "remaining_time": {
+        "name": "Tempo Rimanente"
+      },
+      "total_washes": {
+        "name": "Cicli Totali"
+      },
+      "total_water": {
+        "name": "Acqua Totale Consumata"
+      },
+      "total_energy": {
+        "name": "Energia Totale Consumata"
+      },
+      "current_energy": {
+        "name": "Consumo Energetico Attuale"
+      },
+      "current_water": {
+        "name": "Consumo Acqua Attuale"
+      },
+      "program_name": {
+        "name": "Programma"
+      },
+      "program_phase": {
+        "name": "Fase",
+        "state": {
+          "ready": "Pronto",
+          "washing": "Lavaggio",
+          "phase_skip": "Salto fase",
+          "rinsing": "Risciacquo",
+          "drying": "Asciugatura",
+          "steam": "Vapore",
+          "spinning": "Centrifuga",
+          "weighing": "Pesatura",
+          "rotation_start": "Avvio rotazione",
+          "refresh": "Rinfresco"
+        }
+      },
+      "errors": {
+        "name": "Errori"
+      },
+      "delay_time": {
+        "name": "Ritardo Avvio"
+      },
+      "loading_percentage": {
+        "name": "Carico medio"
+      },
+      "dry_level": {
+        "name": "Livello Asciugatura"
+      },
+      "temp_level": {
+        "name": "Livello Temperatura"
+      },
+      "spin_speed": {
+        "name": "Centrifuga"
+      },
+      "wash_temperature": {
+        "name": "Temperatura Lavaggio"
+      },
+      "dirty_level": {
+        "name": "Livello Sporco"
+      },
+      "stain_type": {
+        "name": "Tipo Macchia",
+        "state": {
+          "none": "Nessuna",
+          "wine": "Vino",
+          "grass": "Erba",
+          "soil": "Terra",
+          "blood": "Sangue",
+          "milk": "Latte",
+          "cooking_oil": "Olio da cucina",
+          "tea": "Tè",
+          "coffee": "Caffè",
+          "chocolate": "Cioccolato",
+          "lip_gloss": "Lucidalabbra",
+          "curry": "Curry",
+          "milk_tea": "Tè al latte",
+          "chili_oil": "Olio di peperoncino",
+          "blue_ink": "Inchiostro blu",
+          "color_pencil": "Matita colorata",
+          "shoe_cream": "Lucido da scarpe",
+          "oil_pastel": "Pastello a olio",
+          "blueberry": "Mirtillo",
+          "sweat": "Sudore",
+          "egg": "Uovo",
+          "ketchup": "Ketchup",
+          "baby_food": "Pappa",
+          "soy_sauce": "Salsa di soia",
+          "bean_paste": "Pasta di fagioli",
+          "chili_sauce": "Salsa piccante",
+          "fruit": "Frutta"
+        }
+      },
+      "temp_indoor": {
+        "name": "Temperatura Interna"
+      },
+      "temp_outdoor": {
+        "name": "Temperatura Esterna"
+      },
+      "humidity_indoor": {
+        "name": "Umidità Interna"
+      },
+      "compressor_freq": {
+        "name": "Frequenza Compressore"
+      },
+      "ac_total_energy": {
+        "name": "Energia Totale Condizionatore"
+      },
+      "pm25": {
+        "name": "PM2.5"
+      },
+      "co2": {
+        "name": "CO2"
+      },
+      "ch2o": {
+        "name": "Formaldeide"
+      },
+      "pm10": {
+        "name": "PM10"
+      },
+      "voc": {
+        "name": "COV"
+      },
+      "co": {
+        "name": "Monossido di Carbonio"
+      },
+      "air_quality": {
+        "name": "Qualità dell'Aria"
+      },
+      "water_hardness": {
+        "name": "Durezza dell'acqua"
+      },
+      "current_wash_cycle": {
+        "name": "Ciclo corrente"
+      },
+      "remaining_rinses": {
+        "name": "Risciacqui rimanenti"
+      },
+      "detergent_level": {
+        "name": "Dose detersivo"
+      },
+      "detergent_weight": {
+        "name": "Detersivo erogato"
+      },
+      "softener_weight": {
+        "name": "Ammorbidente erogato"
+      },
+      "estimated_weight": {
+        "name": "Peso stimato"
+      },
+      "mean_water_consumption": {
+        "name": "Consumo idrico medio"
+      },
+      "program_duration": {
+        "name": "Durata programma"
+      },
+      "temp_zone1": {
+        "name": "Temperatura Zona 1"
+      },
+      "temp_zone2": {
+        "name": "Temperatura Zona 2"
+      },
+      "temp_zone3": {
+        "name": "Temperatura Zona 3"
+      },
+      "temp_zone4": {
+        "name": "Temperatura Zona 4"
+      },
+      "temp_zone5": {
+        "name": "Temperatura Zona 5"
+      },
+      "temp_zone6": {
+        "name": "Temperatura Zona 6"
+      },
+      "temp_upper": {
+        "name": "Temperatura Zona Superiore"
+      },
+      "temp_lower": {
+        "name": "Temperatura Zona Inferiore"
+      },
+      "temp_ambient": {
+        "name": "Temperatura Ambiente"
+      },
+      "humidity_ambient": {
+        "name": "Umidità Ambiente"
+      },
+      "humidity_zone1": {
+        "name": "Umidità Zona 1"
+      },
+      "humidity_zone2": {
+        "name": "Umidità Zona 2"
+      },
+      "temp_cavity": {
+        "name": "Temperatura Forno"
+      },
+      "probe_temp_1": {
+        "name": "Temperatura Sonda 1"
+      },
+      "probe_temp_2": {
+        "name": "Temperatura Sonda 2"
+      },
+      "salt_level": {
+        "name": "Livello Sale",
+        "state": {
+          "ok": "OK",
+          "low": "Basso",
+          "critical": "Critico",
+          "empty": "Non presente"
+        }
+      },
+      "rinse_aid_level": {
+        "name": "Livello Brillantante",
+        "state": {
+          "ok": "OK",
+          "low": "Basso",
+          "critical": "Critico",
+          "empty": "Non presente"
+        }
+      },
+      "fan_speed": {
+        "name": "Velocità Ventola"
+      },
+      "current_power": {
+        "name": "Potenza"
+      },
+      "descaling_cycles": {
+        "name": "Cicli a Decalcificazione"
+      },
+      "lifetime_cycles": {
+        "name": "Cicli Totali"
+      },
+      "water_temp": {
+        "name": "Temperatura Acqua"
+      },
+      "temp_inlet": {
+        "name": "Temperatura Ingresso"
+      },
+      "temp_outlet": {
+        "name": "Temperatura Uscita"
+      },
+      "power": {
+        "name": "Potenza"
+      },
+      "water_volume": {
+        "name": "Acqua Disponibile"
+      },
+      "heating_remaining": {
+        "name": "Tempo al Target"
+      },
+      "battery": {
+        "name": "Batteria"
+      },
+      "power_mode": {
+        "name": "Potenza Aspirazione",
+        "state": {
+          "auto": "Auto",
+          "turbo": "Turbo",
+          "quiet": "Silenzioso"
+        }
+      },
+      "last_work_area": {
+        "name": "Area Ultima Pulizia"
+      },
+      "total_work_area": {
+        "name": "Area Totale Pulita"
+      },
+      "machine_mode": {
+        "name": "Stato",
+        "state": {
+          "idle": "Inattivo",
+          "selection": "Selezione",
+          "running": "In esecuzione",
+          "paused": "In pausa",
+          "delayed_start": "Avvio ritardato",
+          "delayed_start_running": "Avvio ritardato (in corso)",
+          "error": "Errore",
+          "finished": "Terminato",
+          "test": "Test",
+          "stopped": "Arresto",
+          "keep_fresh": "Mantieni fresco"
+        }
+      },
+      "vacuum_state": {
+        "name": "Stato",
+        "state": {
+          "waiting": "In attesa",
+          "auto_cleaning": "Pulizia automatica",
+          "spot_cleaning": "Pulizia localizzata",
+          "paused": "In pausa",
+          "full_and_go": "Full & Go",
+          "cleaning_completed": "Pulizia completata",
+          "charging": "In carica"
+        }
+      },
+      "dryer_phase": {
+        "name": "Fase",
+        "state": {
+          "ready": "Pronto",
+          "heating": "Riscaldamento",
+          "drying": "Asciugatura",
+          "cooling": "Raffreddamento",
+          "rotation": "Rotazione"
+        }
+      },
+      "heater_phase": {
+        "name": "Fase",
+        "state": {
+          "ready": "Pronto",
+          "heating": "Riscaldamento",
+          "holding": "Mantenimento"
+        }
+      },
+      "filter_life": {
+        "name": "Durata Filtro"
+      },
+      "filter_cleaning": {
+        "name": "Durata Prefiltro"
+      },
+      "total_work_time": {
+        "name": "Tempo di Funzionamento Totale"
+      },
+      "pollen_level": {
+        "name": "Livello Polline"
+      },
+      "air_quality_label": {
+        "name": "Giudizio Qualità Aria (sperimentale)",
+        "state": {
+          "good": "Buona"
+        }
+      },
+      "debug_status": {
+        "name": "Stato debug",
+        "state": {
+          "off": "Disattivo",
+          "integration": "Integrazione",
+          "mqtt": "MQTT realtime",
+          "full": "Integrazione + MQTT"
+        }
+      },
+      "integration_log_level": {
+        "name": "Livello log integrazione"
+      },
+      "mqtt_log_level": {
+        "name": "Livello log MQTT"
+      },
+      "appliances_discovered": {
+        "name": "Dispositivi rilevati"
+      },
+      "last_refresh": {
+        "name": "Ultimo aggiornamento"
+      },
+      "last_work_time": {
+        "name": "Ultimo tempo di lavoro"
+      },
+      "power_zone1": {
+        "name": "Livello potenza zona 1"
+      },
+      "power_zone2": {
+        "name": "Livello potenza zona 2"
+      },
+      "power_zone3": {
+        "name": "Livello potenza zona 3"
+      },
+      "power_zone4": {
+        "name": "Livello potenza zona 4"
+      },
+      "power_zone5": {
+        "name": "Livello potenza zona 5"
+      },
+      "power_zone6": {
+        "name": "Livello potenza zona 6"
+      },
+      "remaining_time_zone1": {
+        "name": "Tempo rimanente zona 1"
+      },
+      "remaining_time_zone2": {
+        "name": "Tempo rimanente zona 2"
+      },
+      "remaining_time_zone3": {
+        "name": "Tempo rimanente zona 3"
+      },
+      "remaining_time_zone4": {
+        "name": "Tempo rimanente zona 4"
+      },
+      "remaining_time_zone5": {
+        "name": "Tempo rimanente zona 5"
+      },
+      "remaining_time_zone6": {
+        "name": "Tempo rimanente zona 6"
+      },
+      "plate_temp_zone1": {
+        "name": "Temperatura piastra zona 1"
+      },
+      "plate_temp_zone2": {
+        "name": "Temperatura piastra zona 2"
+      },
+      "plate_temp_zone3": {
+        "name": "Temperatura piastra zona 3"
+      },
+      "plate_temp_zone4": {
+        "name": "Temperatura piastra zona 4"
+      },
+      "plate_temp_zone5": {
+        "name": "Temperatura piastra zona 5"
+      },
+      "plate_temp_zone6": {
+        "name": "Temperatura piastra zona 6"
+      },
+      "program_code_zone1": {
+        "name": "Codice programma zona 1"
+      },
+      "program_code_zone2": {
+        "name": "Codice programma zona 2"
+      },
+      "program_code_zone3": {
+        "name": "Codice programma zona 3"
+      },
+      "program_code_zone4": {
+        "name": "Codice programma zona 4"
+      },
+      "program_code_zone5": {
+        "name": "Codice programma zona 5"
+      },
+      "program_code_zone6": {
+        "name": "Codice programma zona 6"
+      },
+      "program_phase_zone1": {
+        "name": "Fase programma zona 1"
+      },
+      "program_phase_zone2": {
+        "name": "Fase programma zona 2"
+      },
+      "program_phase_zone3": {
+        "name": "Fase programma zona 3"
+      },
+      "program_phase_zone4": {
+        "name": "Fase programma zona 4"
+      },
+      "program_phase_zone5": {
+        "name": "Fase programma zona 5"
+      },
+      "program_phase_zone6": {
+        "name": "Fase programma zona 6"
+      },
+      "timer_hh": {
+        "name": "Timer ore"
+      },
+      "timer_mm": {
+        "name": "Timer minuti"
+      },
+      "my_zone_mode": {
+        "name": "Modalità My Zone (lettura)",
+        "state": {
+          "zero_fresh": "Fresco 0 °C",
+          "quick_cool": "Raffreddamento rapido",
+          "chiller": "Chiller",
+          "cool_drink": "Bevande fresche",
+          "cheese": "Formaggi",
+          "fruit_and_veg": "Frutta e verdura"
+        }
+      }
+    },
+    "binary_sensor": {
+      "door_open": {
+        "name": "Porta"
+      },
+      "door_lock": {
+        "name": "Oblò Bloccato"
+      },
+      "child_lock": {
+        "name": "Blocco Comandi"
+      },
+      "drum_clean_needed": {
+        "name": "Pulizia Cestello"
+      },
+      "filter_clean_needed": {
+        "name": "Pulizia Filtro"
+      },
+      "dry_clean_needed": {
+        "name": "Pulizia Condensatore"
+      },
+      "connectivity": {
+        "name": "Connettività"
+      },
+      "remote_control": {
+        "name": "Controllo remoto"
+      },
+      "preheat": {
+        "name": "Preriscaldamento"
+      },
+      "extra_dry": {
+        "name": "Asciugatura extra"
+      },
+      "half_load": {
+        "name": "Mezzo carico"
+      },
+      "auto_open_door": {
+        "name": "Apertura automatica porta"
+      },
+      "eco_express": {
+        "name": "Eco express"
+      },
+      "night_wash": {
+        "name": "Lavaggio notturno"
+      },
+      "steam": {
+        "name": "Vapore"
+      },
+      "door_zone1": {
+        "name": "Porta Zona 1"
+      },
+      "door2_zone1": {
+        "name": "Porta 2 Zona 1"
+      },
+      "door_zone2": {
+        "name": "Porta Zona 2"
+      },
+      "door_zone3": {
+        "name": "Porta Zona 3"
+      },
+      "door_zone4": {
+        "name": "Porta Zona 4"
+      },
+      "door_cavity1": {
+        "name": "Porta Cavità 1"
+      },
+      "door_cavity2": {
+        "name": "Porta Cavità 2"
+      },
+      "ice_maker": {
+        "name": "Produzione Ghiaccio"
+      },
+      "ice_box_full": {
+        "name": "Contenitore Ghiaccio Pieno"
+      },
+      "energy_saving": {
+        "name": "Risparmio Energetico"
+      },
+      "quick_cool": {
+        "name": "Super Cool (lettura)"
+      },
+      "quick_freeze": {
+        "name": "Super Freeze (lettura)"
+      },
+      "auto_set": {
+        "name": "Auto-Set (lettura)"
+      },
+      "holiday_mode": {
+        "name": "Modalità Vacanza (lettura)"
+      },
+      "filter_change": {
+        "name": "Cambio Filtro"
+      },
+      "ch2o_cleaning": {
+        "name": "Pulizia Formaldeide"
+      },
+      "light": {
+        "name": "Luce"
+      },
+      "presence": {
+        "name": "Presenza"
+      },
+      "pan_zone1": {
+        "name": "Pentola Zona 1"
+      },
+      "pan_zone2": {
+        "name": "Pentola Zona 2"
+      },
+      "pan_zone3": {
+        "name": "Pentola Zona 3"
+      },
+      "pan_zone4": {
+        "name": "Pentola Zona 4"
+      },
+      "pan_zone5": {
+        "name": "Pentola Zona 5"
+      },
+      "pan_zone6": {
+        "name": "Pentola Zona 6"
+      },
+      "indicator_light": {
+        "name": "Spia"
+      },
+      "eco_active": {
+        "name": "Eco Attivo"
+      },
+      "problem": {
+        "name": "Guasto"
+      },
+      "co_alarm": {
+        "name": "Indicazione Monossido di Carbonio (sperimentale, non è un rilevatore certificato)"
+      },
+      "update_ok": {
+        "name": "Aggiornamento OK"
+      },
+      "filter_cleaning": {
+        "name": "Pulizia filtro"
+      },
+      "running": {
+        "name": "In funzione"
+      },
+      "zone_on_zone1": {
+        "name": "Zona 1 accesa"
+      },
+      "zone_on_zone2": {
+        "name": "Zona 2 accesa"
+      },
+      "zone_on_zone3": {
+        "name": "Zona 3 accesa"
+      },
+      "zone_on_zone4": {
+        "name": "Zona 4 accesa"
+      },
+      "zone_on_zone5": {
+        "name": "Zona 5 accesa"
+      },
+      "zone_on_zone6": {
+        "name": "Zona 6 accesa"
+      },
+      "hot_zone1": {
+        "name": "Zona 1 calda"
+      },
+      "hot_zone2": {
+        "name": "Zona 2 calda"
+      },
+      "hot_zone3": {
+        "name": "Zona 3 calda"
+      },
+      "hot_zone4": {
+        "name": "Zona 4 calda"
+      },
+      "hot_zone5": {
+        "name": "Zona 5 calda"
+      },
+      "hot_zone6": {
+        "name": "Zona 6 calda"
+      },
+      "error_zone1": {
+        "name": "Errore zona 1"
+      },
+      "error_zone2": {
+        "name": "Errore zona 2"
+      },
+      "error_zone3": {
+        "name": "Errore zona 3"
+      },
+      "error_zone4": {
+        "name": "Errore zona 4"
+      },
+      "error_zone5": {
+        "name": "Errore zona 5"
+      },
+      "error_zone6": {
+        "name": "Errore zona 6"
+      },
+      "combi_mode_zone1": {
+        "name": "Zona 1 unita"
+      },
+      "combi_mode_zone2": {
+        "name": "Zona 2 unita"
+      },
+      "combi_mode_zone3": {
+        "name": "Zona 3 unita"
+      },
+      "combi_mode_zone4": {
+        "name": "Zona 4 unita"
+      },
+      "combi_mode_zone5": {
+        "name": "Zona 5 unita"
+      },
+      "combi_mode_zone6": {
+        "name": "Zona 6 unita"
+      }
+    },
+    "switch": {
+      "sleep": {
+        "name": "Modalità Notte"
+      },
+      "mute": {
+        "name": "Muto"
+      },
+      "eco": {
+        "name": "Eco"
+      },
+      "rapid": {
+        "name": "Rapido"
+      },
+      "health": {
+        "name": "Health"
+      },
+      "self_clean": {
+        "name": "Autopulizia"
+      },
+      "self_clean_56": {
+        "name": "Autopulizia 56°C"
+      },
+      "display": {
+        "name": "Display"
+      },
+      "light": {
+        "name": "Luce"
+      },
+      "ten_degree_heating": {
+        "name": "Riscaldamento 10°C"
+      },
+      "child_lock": {
+        "name": "Blocco Bambini"
+      },
+      "touch_tone": {
+        "name": "Suono Tasti"
+      },
+      "human_sensing": {
+        "name": "Sensore Presenza"
+      },
+      "electric_heating": {
+        "name": "Riscaldamento Elettrico"
+      },
+      "fresh_air": {
+        "name": "Aria Fresca"
+      },
+      "half_degree": {
+        "name": "Mezzo Grado"
+      },
+      "energy_saving": {
+        "name": "Risparmio Energetico"
+      },
+      "extra_rinse_1": {
+        "name": "Extra risciacquo 1"
+      },
+      "extra_rinse_2": {
+        "name": "Extra risciacquo 2"
+      },
+      "extra_rinse_3": {
+        "name": "Extra risciacquo 3"
+      },
+      "acquaplus": {
+        "name": "Acqua Plus"
+      },
+      "prewash": {
+        "name": "Prelavaggio"
+      },
+      "hygiene": {
+        "name": "Igiene extra"
+      },
+      "anticrease": {
+        "name": "Antipiega"
+      },
+      "good_night": {
+        "name": "Buonanotte"
+      },
+      "sterilization": {
+        "name": "Sterilizzazione"
+      },
+      "tumbling": {
+        "name": "Rotazione antipiega"
+      },
+      "permanent_press": {
+        "name": "Mantieni fresco"
+      },
+      "anti_crease_time": {
+        "name": "Tempo antipiega"
+      },
+      "pause": {
+        "name": "Pausa"
+      },
+      "debug_logging": {
+        "name": "Log di debug"
+      },
+      "mqtt_realtime_debug": {
+        "name": "Debug MQTT realtime"
+      },
+      "delay_timer": {
+        "name": "Timer di spegnimento"
+      },
+      "power": {
+        "name": "Alimentazione"
+      },
+      "auto_set": {
+        "name": "Auto-Set"
+      },
+      "super_cool": {
+        "name": "Super Cool"
+      },
+      "super_freeze": {
+        "name": "Super Freeze"
+      },
+      "holiday_mode": {
+        "name": "Modalità Vacanza"
+      }
+    },
+    "number": {
+      "target_temp_zone1": {
+        "name": "Temperatura impostata Zona 1"
+      },
+      "target_temp_zone2": {
+        "name": "Temperatura impostata Zona 2"
+      },
+      "target_temp_zone3": {
+        "name": "Temperatura impostata Zona 3"
+      },
+      "target_temp_zone4": {
+        "name": "Temperatura impostata Zona 4"
+      },
+      "target_temp_upper": {
+        "name": "Temperatura impostata Zona Superiore"
+      },
+      "target_temp_lower": {
+        "name": "Temperatura impostata Zona Inferiore"
+      },
+      "target_temp": {
+        "name": "Temperatura impostata"
+      },
+      "target_temp_oven": {
+        "name": "Temperatura Forno"
+      },
+      "delay_time": {
+        "name": "Partenza ritardata"
+      },
+      "aroma_time_on": {
+        "name": "Durata Aroma Attivo (sperimentale)"
+      },
+      "aroma_time_off": {
+        "name": "Durata Aroma Spento (sperimentale)"
+      },
+      "delay_off_time": {
+        "name": "Ritardo di spegnimento"
+      }
+    },
+    "select": {
+      "program": {
+        "name": "Programma"
+      },
+      "aroma": {
+        "name": "Aroma",
+        "state": {
+          "off": "Spento",
+          "soft": "Leggero",
+          "mid": "Medio",
+          "h_biotics": "H-Biotics",
+          "custom": "Personalizzato"
+        }
+      },
+      "panel_light": {
+        "name": "Luce Pannello",
+        "state": {
+          "off": "Spenta",
+          "low": "Bassa",
+          "high": "Alta"
+        }
+      },
+      "ref_program": {
+        "name": "Programma",
+        "state": {
+          "off": "Spento",
+          "holiday": "Vacanza",
+          "super_cool": "Super raffreddamento",
+          "super_freeze": "Super congelamento",
+          "auto_set": "Auto set",
+          "quick_cool": "Raffreddamento rapido",
+          "zero_fresh": "Zero gradi",
+          "fruit_and_veg": "Frutta e verdura",
+          "soft_freeze": "Congelamento leggero",
+          "iot_daily_use": "Uso quotidiano",
+          "iot_extra_cold": "Extra freddo",
+          "iot_extra_cold_water": "Extra freddo (acqua)",
+          "iot_extra_ice": "Extra ghiaccio",
+          "iot_high_efficiency": "Alta efficienza",
+          "iot_special_food_core": "Alimenti speciali"
+        }
+      },
+      "my_zone_mode": {
+        "name": "Modalità My Zone",
+        "state": {
+          "zero_fresh": "Fresco 0 °C",
+          "quick_cool": "Raffreddamento rapido",
+          "fruit_and_veg": "Frutta e verdura"
+        }
+      },
+      "spin_speed": {
+        "name": "Centrifuga"
+      },
+      "wash_temp": {
+        "name": "Temperatura"
+      },
+      "dry_level": {
+        "name": "Livello di asciugatura",
+        "state": {
+          "extra_dry": "Extra asciutto",
+          "cupboard": "Pronto armadio",
+          "iron_dry": "Pronto stiro",
+          "hang_dry": "Pronto stendi",
+          "smart_dry": "Asciugatura smart",
+          "wool_dry": "Asciugatura lana",
+          "ready_to_wear": "Pronto indossa"
+        }
+      },
+      "temp_level": {
+        "name": "Livello temperatura",
+        "state": {
+          "minimum": "Minima",
+          "low": "Bassa",
+          "medium": "Media",
+          "high": "Alta"
+        }
+      },
+      "dirty_level": {
+        "name": "Livello di sporco",
+        "state": {
+          "little": "Leggero",
+          "normal": "Normale",
+          "very": "Intenso"
+        }
+      },
+      "steam_level": {
+        "name": "Livello vapore",
+        "state": {
+          "no_steam": "Senza vapore",
+          "cotton": "Cotone",
+          "delicate": "Delicati",
+          "synthetic": "Sintetici"
+        }
+      },
+      "fan_direction_vertical": {
+        "name": "Direzione aria verticale",
+        "state": {
+          "position_2": "Posizione 2",
+          "position_4": "Posizione 4",
+          "position_5": "Posizione 5",
+          "position_6": "Posizione 6",
+          "position_7": "Posizione 7",
+          "swing": "Oscillazione"
+        }
+      },
+      "fan_direction_horizontal": {
+        "name": "Direzione aria orizzontale",
+        "state": {
+          "position_0": "Posizione 0",
+          "position_3": "Posizione 3",
+          "position_4": "Posizione 4",
+          "position_5": "Posizione 5",
+          "position_6": "Posizione 6",
+          "swing": "Oscillazione"
+        }
+      },
+      "power_limit": {
+        "name": "Limite di assorbimento",
+        "state": {
+          "no_limit": "Nessun limite",
+          "kw_2_5": "2,5 kW",
+          "kw_3_5": "3,5 kW",
+          "kw_4_5": "4,5 kW",
+          "kw_5_5": "5,5 kW",
+          "kw_6_5": "6,5 kW",
+          "kw_2_0": "2,0 kW",
+          "kw_3_0": "3,0 kW",
+          "kw_6_8": "6,8 kW",
+          "kw_7_2": "7,2 kW"
+        }
+      }
+    },
+    "button": {
+      "start_program": {
+        "name": "Avvia programma"
+      },
+      "stop_program": {
+        "name": "Ferma programma"
+      },
+      "ref_preset_iot_daily_use": {
+        "name": "Applica uso quotidiano"
+      },
+      "ref_preset_iot_extra_cold": {
+        "name": "Applica extra freddo"
+      },
+      "ref_preset_iot_extra_cold_water": {
+        "name": "Applica extra freddo (acqua)"
+      },
+      "ref_preset_iot_extra_ice": {
+        "name": "Applica extra ghiaccio"
+      },
+      "ref_preset_iot_high_efficiency": {
+        "name": "Applica alta efficienza"
+      },
+      "ref_preset_iot_special_food_core": {
+        "name": "Applica alimenti speciali"
+      },
+      "force_refresh": {
+        "name": "Aggiorna ora"
+      },
+      "reset_debug": {
+        "name": "Reset debug"
+      }
+    },
+    "fan": {
+      "purifier": {
+        "name": "Purificatore"
+      },
+      "hood": {
+        "name": "Cappa"
+      }
+    }
+  },
+  "exceptions": {
+    "aroma_custom_not_active": {
+      "message": "Le durate dell'aroma si possono cambiare solo mentre la modalità aroma personalizzata è in corso."
+    },
+    "appliance_or_client_unavailable": {
+      "message": "L'apparecchio o il client non è disponibile."
+    },
+    "command_error": {
+      "message": "Comando non riuscito: {error}"
+    },
+    "command_rejected": {
+      "message": "Il servizio hOn non ha accettato il comando."
+    },
+    "invalid_setpoint": {
+      "message": "Il valore {value} non è ammesso (ammessi: {allowed})."
+    },
+    "program_not_found": {
+      "message": "Programma \"{program}\" non trovato."
+    },
+    "program_not_supported": {
+      "message": "Programma \"{program}\" non supportato da questo apparecchio."
+    },
+    "setpoint_cleared_modes": {
+      "message": "La temperatura la stava decidendo l'apparecchio, quindi le modalit\u00e0 attive sono state spente. Imposta di nuovo la temperatura."
+    },
+    "setpoint_owned_by_mode": {
+      "message": "\u00c8 attiva una modalit\u00e0 e la temperatura la decide l'apparecchio. Questo apparecchio non permette di spegnerla da remoto: usa il pannello sull'apparecchio."
+    },
+    "purifier_not_running": {
+      "message": "Il purificatore deve risultare in funzione per cambiare questa impostazione."
+    },
+    "refresh_after_command_failed": {
+      "message": "Aggiornamento dopo il comando non riuscito."
+    },
+    "refresh_after_command_failed_error": {
+      "message": "Aggiornamento dopo il comando non riuscito: {error}"
+    },
+    "swing_not_supported": {
+      "message": "Questo apparecchio non supporta l'oscillazione verticale."
+    },
+    "swing_position_not_allowed": {
+      "message": "Posizione oscillazione {position} non ammessa (ammesse: {allowed})."
+    },
+    "speed_not_supported": {
+      "message": "Questo purificatore funziona a modalità discrete e non ha una velocità della ventola. Imposta una modalità preimpostata invece di una percentuale."
+    }
+  },
+  "issues": {
+    "ref_program_select_replaced": {
+      "title": "Il menu a tendina dei programmi del frigo è stato sostituito",
+      "description": "Il menu a tendina unico dei programmi del frigo (`select.…_ref_program`) è stato rimosso, perché l'apparecchio non funziona così: Super Cool, Super Freeze, Auto-Set e Modalità Vacanza sono quattro impostazioni indipendenti e possono essere attive insieme, e spegnerne una ne spegneva altre tre.\n\nAdesso sono quattro interruttori. Il cassetto My Zone ha un suo selettore di modalità, e ogni preset scaricato ha un pulsante che lo invia.\n\n**Ogni automazione o script che chiamava `select.select_option` sulla vecchia entità va aggiornato.** Non segnalerà nessun errore: Home Assistant risponde a una chiamata verso un'entità che non esiste più con un avviso nel log e una chiamata di servizio riuscita, quindi l'automazione continua a girare senza fare niente.\n\nChiudi questo avviso quando hai controllato."
+    }
+  }
+}

@@ -1,0 +1,97 @@
+automation:
+  - id: boiler_manual_history
+    alias: Boiler manual history
+    mode: queued
+    max: 10
+
+    triggers:
+      - trigger: state
+        entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+        from: "off"
+        to: "on"
+        id: manual_on
+
+      - trigger: state
+        entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+        from: "on"
+        to: "off"
+        id: manual_off
+
+    conditions:
+      # Manual history exists only while automatic control is disabled.
+      - condition: state
+        entity_id: input_boolean.boiler_automation_enabled
+        state: "off"
+
+    actions:
+      - choose:
+          # ==================================================
+          # MANUAL ON
+          # ==================================================
+          - conditions:
+              - condition: trigger
+                id: manual_on
+
+            sequence:
+              - action: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.boiler_manual_started_at
+                data:
+                  datetime: >
+                    {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.boiler_manual_session_active
+
+              - action: logbook.log
+                data:
+                  name: Boiler Ariston
+                  entity_id: input_text.boiler_history
+                  message: >-
+                    MANUAL ON · Automatic control disabled
+
+          # ==================================================
+          # MANUAL OFF
+          # ==================================================
+          - conditions:
+              - condition: trigger
+                id: manual_off
+
+              - condition: state
+                entity_id: input_boolean.boiler_manual_session_active
+                state: "on"
+
+            sequence:
+              - variables:
+                  runtime_formatted: >
+                    {% set started =
+                      state_attr(
+                        'input_datetime.boiler_manual_started_at',
+                        'timestamp'
+                      )
+                    %}
+
+                    {% if started is number %}
+                      {% set total =
+                        ((as_timestamp(now()) - started) / 60) | int
+                      %}
+                      {% set hours = total // 60 %}
+                      {% set minutes = total % 60 %}
+
+                      {{ hours }} h {{ '%02d' | format(minutes) }} min
+                    {% else %}
+                      0 h 00 min
+                    {% endif %}
+
+              # Clear first to protect against duplicate switch events.
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.boiler_manual_session_active
+
+              - action: logbook.log
+                data:
+                  name: Boiler Ariston
+                  entity_id: input_text.boiler_history
+                  message: >-
+                    MANUAL OFF · Runtime {{ runtime_formatted }}

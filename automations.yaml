@@ -1,0 +1,149 @@
+- id: '1790022890261'
+  alias: connect sensor + controller badroom
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.bedroom_sensor_2_temperatura
+      trv_calibration_number: number.spalnia_bedroom_controller_2_external_temperature_sensor_value
+      trv_climate_entity: climate.spalnia_bedroom_controller_2_termostat
+- id: '1790060311511'
+  alias: children room synck temp + window + controller
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_childrenroom_3_temperatura
+      trv_calibration_number: number.controller_children_room_3_82_external_temperature_sensor_value
+      trv_climate_entity: climate.controller_children_room_3_82_termostat
+      window_sensors:
+      - binary_sensor.window_children_room
+- id: '1790168454947'
+  alias: Living room sync controller + sensor + window
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_living_room_5_temperatura
+      trv_calibration_number: number.controller_living_room_5_71_external_temperature_sensor_value
+      trv_climate_entity: climate.controller_living_room_5_71_termostat
+      window_sensors:
+      - binary_sensor.window_living_room_5
+- id: '1790175667950'
+  alias: 'Balcony sync controller + sensor '
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_balcony_temperatura
+      trv_calibration_number: number.controller_balcony_7_87_external_temperature_sensor_value
+      trv_climate_entity: climate.controller_balcony_7_87_termostat
+      window_sensors: []
+- id: '1790175763556'
+  alias: Dinner place sync controller + sensor
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_kitchen_1_temperatura
+      trv_calibration_number: number.controller_diner_place_1_100_temperature_control_accuracy
+      trv_climate_entity: climate.controller_diner_place_1_100_termostat
+      window_sensors:
+      - binary_sensor.kitchen_united_windows_sensor
+- id: '1790175928267'
+  alias: Underfloor sync controller + sensor
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_underfloor_4_temperatura
+      trv_calibration_number: number.controller_underfloor_4_92_external_temperature_sensor_value
+      trv_climate_entity: climate.controller_underfloor_4_92_termostat
+- id: '1790176004294'
+  alias: 'Bathroom sync controller + sensor '
+  description: ''
+  use_blueprint:
+    path: 9jS2PL5T/SonoffTRVZB.yaml
+    input:
+      room_temp_sensor: sensor.sensor_bathroom_6_temperatura
+      trv_calibration_number: number.controller_bathroom_6_92_external_temperature_sensor_value
+      trv_climate_entity: climate.controller_bathroom_6_92_termostat
+- id: '1790766870261'
+  alias: Hall remote -> main light
+  description: ''
+  triggers:
+  - trigger: event
+    event_type: zha_event
+    event_data:
+      device_id: 03210ace0cb26c0dcb05446494dda33b
+      command: remote_button_short_press
+  conditions: []
+  actions:
+  - action: light.toggle
+    target:
+      entity_id: light.hall_switch_hall_main_v2
+  mode: single
+- id: '1790777311497'
+  alias: Velair - Pause a zone while windows are open
+  description: ''
+  use_blueprint:
+    path: cgonfer/window_pause.yaml
+    input:
+      climate_entity:
+      - climate.controller_balcony_7_87_termostat
+      opening_entities:
+      - binary_sensor.window_balcony_1_hobeian_zg_102z
+      - binary_sensor.window_balcony_2
+      - binary_sensor.balcony_door_mi_sensor
+      pause_action: turn_off
+      open_delay:
+        hours: 0
+        minutes: 0
+        seconds: 10
+      close_delay:
+        hours: 0
+        minutes: 0
+        seconds: 10
+- id: '1790779089891'
+  alias: Children Velar - Pause a zone while windows are open
+  description: ''
+  use_blueprint:
+    path: cgonfer/window_pause.yaml
+    input:
+      climate_entity:
+      - climate.controller_children_room_3_82_termostat
+      opening_entities:
+      - binary_sensor.window_children_room
+      open_delay:
+        hours: 0
+        minutes: 5
+        seconds: 0
+- id: '1790779188443'
+  alias: Living room Velar - Pause a zone while windows are open
+  description: ''
+  use_blueprint:
+    path: cgonfer/window_pause.yaml
+    input:
+      climate_entity:
+      - climate.controller_living_room_5_71_termostat
+      opening_entities:
+      - binary_sensor.window_living_room_5
+      open_delay:
+        hours: 0
+        minutes: 5
+        seconds: 0
+- id: '1790779243088'
+  alias: Dinner Place Velar - Pause a zone while windows are open
+  description: ''
+  use_blueprint:
+    path: cgonfer/window_pause.yaml
+    input:
+      climate_entity:
+      - climate.controller_diner_place_1_100_termostat
+      opening_entities:
+      - binary_sensor.kukhnia_window_kitchen_1
+      - binary_sensor.windows_kitchen_2
+      open_delay:
+        hours: 0
+        minutes: 5
+        seconds: 0

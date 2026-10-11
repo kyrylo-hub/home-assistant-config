@@ -1,0 +1,113 @@
+template:
+  - binary_sensor:
+      - name: Children Velair manual mode
+        unique_id: children_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_children_room_3_82_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_children_room_3_82_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Dinner Velair manual mode
+        unique_id: dinner_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_diner_place_1_100_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_diner_place_1_100_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Underfloor Velair manual mode
+        unique_id: underfloor_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_underfloor_4_92_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_underfloor_4_92_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Living room Velair manual mode
+        unique_id: living_room_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_living_room_5_71_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_living_room_5_71_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Bedroom Velair manual mode
+        unique_id: bedroom_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_bedroom_2_72_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_bedroom_2_72_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Bathroom Velair manual mode
+        unique_id: bathroom_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_bathroom_6_92_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_bathroom_6_92_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Balcony Velair manual mode
+        unique_id: balcony_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_balcony_7_87_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_balcony_7_87_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}
+
+      - name: Hall Velair manual mode
+        unique_id: hall_velair_manual_mode
+        state: >
+          {{
+            is_state(
+              'sensor.spalnia_velair1_controller_hall_8_74_termostat_override',
+              'paused'
+            )
+            and state_attr(
+              'sensor.spalnia_velair1_controller_hall_8_74_termostat_override',
+              'pause_id'
+            ) == 'velair.manual_adjustment'
+          }}

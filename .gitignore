@@ -1,0 +1,30 @@
+
+# Home Assistant private configuration
+.storage/
+.cloud/
+secrets.yaml
+**/secrets.yaml
+*.pem
+*.key
+*.token
+ip_bans.yaml
+
+# Database and history
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Temporary files and logs
+*.log
+*.log.*
+.cache/
+__pycache__/
+*.pyc
+deps/
+tts/
+.HA_VERSION
+
+# Git
+.git/

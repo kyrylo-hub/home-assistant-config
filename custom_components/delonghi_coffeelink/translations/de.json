@@ -1,0 +1,353 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "DeLonghi Coffee Link",
+        "description": "Gib die Zugangsdaten deines Coffee-Link-Kontos ein. Es sind dieselben, die du in der mobilen Coffee-Link-App verwendest.",
+        "data": {
+          "email": "E-Mail",
+          "password": "Passwort"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ungültige E-Mail-Adresse oder ungültiges Passwort.",
+      "cannot_connect": "Verbindung zur DeLonghi-Cloud fehlgeschlagen.",
+      "no_devices": "In diesem Konto wurden keine DeLonghi-Geräte gefunden.",
+      "unknown": "Unerwarteter Fehler."
+    },
+    "abort": {
+      "already_configured": "Dieses Konto ist bereits konfiguriert."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "total_beverages": {
+        "name": "Schwarze Getränke gesamt"
+      },
+      "total_espresso": {
+        "name": "Espresso gesamt"
+      },
+      "total_milk_drinks": {
+        "name": "Kaffee-Milch-Getränke gesamt"
+      },
+      "total_water": {
+        "name": "Reine Milchgetränke gesamt"
+      },
+      "total_espresso_alt": {
+        "name": "Espresso (alternativ) gesamt"
+      },
+      "total_coffee": {
+        "name": "Kaffee gesamt"
+      },
+      "total_long_coffee": {
+        "name": "Long Coffee gesamt"
+      },
+      "total_doppio": {
+        "name": "Doppio+ gesamt"
+      },
+      "total_americano": {
+        "name": "Americano gesamt"
+      },
+      "total_cappuccino": {
+        "name": "Cappuccino gesamt"
+      },
+      "total_latte_macchiato": {
+        "name": "Latte Macchiato gesamt"
+      },
+      "total_caffelatte": {
+        "name": "Caffè Latte gesamt"
+      },
+      "total_flat_white": {
+        "name": "Flat White gesamt"
+      },
+      "total_espresso_macchiato": {
+        "name": "Espresso Macchiato gesamt"
+      },
+      "total_hot_milk": {
+        "name": "Heiße Milch gesamt"
+      },
+      "total_cappuccino_doppio": {
+        "name": "Cappuccino Doppio+ gesamt"
+      },
+      "total_cappuccino_reverse": {
+        "name": "Cappuccino Reverse gesamt"
+      },
+      "total_hot_water": {
+        "name": "Heißwasser gesamt"
+      },
+      "total_tea": {
+        "name": "Tee gesamt"
+      },
+      "total_coffee_pot": {
+        "name": "Kaffeekannen gesamt"
+      },
+      "total_brew_over_ice": {
+        "name": "Brew Over Ice gesamt"
+      },
+      "total_mug_hot": {
+        "name": "Heiße Bechergetränke gesamt"
+      },
+      "total_mug_cold": {
+        "name": "Kalte Bechergetränke gesamt"
+      },
+      "total_iced_bev": {
+        "name": "Eisgetränke gesamt"
+      },
+      "total_mug_bev": {
+        "name": "Bechergetränke gesamt"
+      },
+      "total_mug_iced_bev": {
+        "name": "Eis-Bechergetränke gesamt"
+      },
+      "total_cold_brew_bev": {
+        "name": "Cold-Brew-Getränke gesamt"
+      },
+      "grounds_counter": {
+        "name": "Tresterzähler"
+      },
+      "total_descales": {
+        "name": "Entkalkungen gesamt"
+      },
+      "water_total_quantity": {
+        "name": "Wassermenge gesamt"
+      },
+      "total_filters_used": {
+        "name": "Verbrauchte Filter gesamt"
+      },
+      "water_filter_quantity": {
+        "name": "Gefilterte Wassermenge"
+      },
+      "descale_status": {
+        "name": "Entkalkungsstatus"
+      },
+      "water_hardness": {
+        "name": "Wasserhärte"
+      },
+      "software_version": {
+        "name": "Softwareversion"
+      },
+      "last_connected": {
+        "name": "Zuletzt verbunden"
+      },
+      "connection_status": {
+        "name": "Verbindungsstatus",
+        "state": {
+          "online": "Verbunden",
+          "offline": "Getrennt",
+          "unknown": "Unbekannt"
+        }
+      },
+      "machine_status": {
+        "name": "Maschinenstatus",
+        "state": {
+          "standby": "Standby",
+          "waking_up": "Wird eingeschaltet",
+          "going_to_sleep": "Wechselt in den Standby",
+          "descaling": "Entkalkung",
+          "preparing_steam": "Dampf wird erzeugt",
+          "recovering": "Aufheizen",
+          "ready": "Bereit",
+          "rinsing": "Spülung",
+          "preparing_milk": "Milchzubereitung",
+          "dispensing_hot_water": "Heißwasserausgabe",
+          "cleaning_milk": "Milchsystem-Reinigung",
+          "preparing_chocolate": "Schokoladenzubereitung",
+          "preparing_milk_alt": "Milchzubereitung",
+          "unknown": "Unbekannt"
+        }
+      },
+      "cloud_session_app_id": {
+        "name": "App-ID der Cloud-Sitzung"
+      },
+      "last_captured_command": {
+        "name": "Zuletzt mitgeschnittener Befehl"
+      },
+      "total_other_beverages": {
+        "name": "Sonstige Getränke gesamt"
+      },
+      "total_cortado": {
+        "name": "Cortado gesamt"
+      },
+      "total_long_black": {
+        "name": "Long Black gesamt"
+      },
+      "total_mug_to_go": {
+        "name": "Mug to Go gesamt"
+      },
+      "monitor_published": {
+        "name": "Status zuletzt gesendet"
+      }
+    },
+    "button": {
+      "start_espresso": {
+        "name": "Espresso"
+      },
+      "start_coffee": {
+        "name": "Kaffee"
+      },
+      "start_long_coffee": {
+        "name": "Long Coffee"
+      },
+      "start_double_espresso": {
+        "name": "Doppelter Espresso"
+      },
+      "start_doppio": {
+        "name": "Doppio+"
+      },
+      "start_americano": {
+        "name": "Americano"
+      },
+      "start_cappuccino": {
+        "name": "Cappuccino"
+      },
+      "start_latte_macchiato": {
+        "name": "Latte Macchiato"
+      },
+      "start_caffelatte": {
+        "name": "Caffè Latte"
+      },
+      "start_flat_white": {
+        "name": "Flat White"
+      },
+      "start_espresso_macchiato": {
+        "name": "Espresso Macchiato"
+      },
+      "start_hot_milk": {
+        "name": "Heiße Milch"
+      },
+      "start_cappuccino_doppio": {
+        "name": "Cappuccino Doppio+"
+      },
+      "start_cappuccino_reverse": {
+        "name": "Cappuccino Reverse"
+      },
+      "start_hot_water": {
+        "name": "Heißwasser"
+      },
+      "start_tea": {
+        "name": "Tee"
+      },
+      "start_coffee_pot": {
+        "name": "Kaffeekanne"
+      },
+      "start_cortado": {
+        "name": "Cortado"
+      },
+      "start_long_black": {
+        "name": "Long Black"
+      },
+      "start_mug_to_go": {
+        "name": "Reisebecher"
+      },
+      "start_brew_over_ice": {
+        "name": "Brew Over Ice"
+      },
+      "wake": {
+        "name": "Einschalten"
+      },
+      "standby": {
+        "name": "Standby"
+      },
+      "stop": {
+        "name": "Stopp"
+      },
+      "dump_recipes": {
+        "name": "Rezept-Datenpunkte protokollieren"
+      }
+    },
+    "binary_sensor": {
+      "water_tank_empty": {
+        "name": "Wassertank leer"
+      },
+      "waste_container_full": {
+        "name": "Tresterbehälter voll"
+      },
+      "decalcification_needed": {
+        "name": "Entkalkung erforderlich"
+      },
+      "filter_change_needed": {
+        "name": "Filterwechsel erforderlich"
+      }
+    }
+  },
+  "services": {
+    "start_beverage": {
+      "name": "Getränk starten",
+      "description": "Startet die Zubereitung eines Getränks auf der ausgewählten De'Longhi Kaffeemaschine.",
+      "fields": {
+        "beverage": {
+          "name": "Getränk",
+          "description": "Zuzubereitendes Getränkerezept."
+        }
+      }
+    },
+    "stop_beverage": {
+      "name": "Getränk stoppen",
+      "description": "Stoppt die Zubereitung des ausgewählten Getränks.",
+      "fields": {
+        "beverage": {
+          "name": "Getränk",
+          "description": "Getränk, dessen Zubereitung gestoppt werden soll."
+        }
+      }
+    },
+    "send_raw_command": {
+      "name": "Rohbefehl senden",
+      "description": "Sendet einen base64-codierten Binärbefehl an die Kaffeemaschine (für fortgeschrittene Nutzer).",
+      "fields": {
+        "value_base64": {
+          "name": "Befehl (base64)",
+          "description": "Base64-Darstellung der Befehlsbytes."
+        }
+      }
+    }
+  },
+  "selector": {
+    "beverage": {
+      "options": {
+        "espresso": "Espresso",
+        "coffee": "Kaffee",
+        "long_coffee": "Long Coffee",
+        "double_espresso": "Doppelter Espresso",
+        "doppio": "Doppio+",
+        "americano": "Americano",
+        "cappuccino": "Cappuccino",
+        "latte_macchiato": "Latte Macchiato",
+        "caffelatte": "Caffè Latte",
+        "flat_white": "Flat White",
+        "espresso_macchiato": "Espresso Macchiato",
+        "hot_milk": "Heiße Milch",
+        "cappuccino_doppio": "Cappuccino Doppio+",
+        "cappuccino_reverse": "Cappuccino Reverse",
+        "hot_water": "Heißwasser",
+        "tea": "Tee",
+        "coffee_pot": "Kaffeekanne",
+        "cortado": "Cortado",
+        "long_black": "Long Black",
+        "mug_to_go": "Reisebecher",
+        "brew_over_ice": "Brew Over Ice"
+      }
+    }
+  },
+  "exceptions": {
+    "machine_offline": {
+      "message": "{name} ist in der De'Longhi-Cloud offline und kann keine Befehle empfangen. Prüfen Sie, ob die Maschine mit dem Stromnetz und dem WLAN verbunden ist (Coffee Link App), und versuchen Sie es erneut."
+    },
+    "no_machine_configured": {
+      "message": "Es ist keine De'Longhi-Maschine eingerichtet, an die dieser Befehl gehen könnte."
+    },
+    "target_required": {
+      "message": "Zu diesem Konto gehören mehrere Maschinen ({machines}); der Befehl muss angeben, welche gemeint ist. Wählen Sie ein Gerät als Ziel der Aktion - sonst ginge er an alle."
+    },
+    "target_not_a_machine": {
+      "message": "{device} ist keine von dieser Integration verwaltete De'Longhi-Kaffeemaschine. Verfügbare Maschinen: {machines}."
+    },
+    "machine_unavailable": {
+      "message": "{device} ist zwar eine De'Longhi-Maschine, aber ihr Konto ist derzeit nicht geladen, daher kann der Befehl nicht gesendet werden. Verfügbare Maschinen: {machines}."
+    },
+    "target_matched_no_machine": {
+      "message": "Das Ziel dieser Aktion enthält keine De'Longhi-Kaffeemaschine. Verfügbare Maschinen: {machines}."
+    }
+  }
+}

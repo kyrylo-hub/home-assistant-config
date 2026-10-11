@@ -1,0 +1,155 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add a TV",
+        "description": "Choose how to connect to the YouTube app on your TV.",
+        "menu_options": {
+          "host": "Enter the TV's IP address",
+          "pairing_code": "Use a TV code"
+        }
+      },
+      "host": {
+        "title": "Connect by IP address",
+        "description": "The YouTube app must be open on the TV.",
+        "data": {
+          "host": "Host"
+        },
+        "data_description": {
+          "host": "Hostname or IP address of the TV."
+        }
+      },
+      "pairing_code": {
+        "title": "Connect with a TV code",
+        "description": "On the TV, open YouTube and go to Settings > Link with TV code. Enter the code shown there.",
+        "data": {
+          "pairing_code": "TV code"
+        },
+        "data_description": {
+          "pairing_code": "The 12-digit code shown on the TV. Spaces are ignored."
+        }
+      },
+      "discovery_confirm": {
+        "description": "Do you want to add the YouTube app on {name}?"
+      },
+      "reauth_confirm": {
+        "title": "Reconnect to {name}",
+        "description": "YouTube no longer accepts the saved connection to {name}. Open the YouTube app on the TV and select Submit to reconnect."
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "no_screen_id": "The TV didn't provide a YouTube screen. Make sure the YouTube app is open on the TV, or use a TV code instead.",
+      "invalid_pairing_code": "The TV code was not accepted. Codes expire after a few minutes; get a new one and try again.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This TV is already configured",
+      "cannot_connect": "Failed to connect",
+      "not_supported": "This device doesn't expose a YouTube app",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "exceptions": {
+    "cannot_connect": {
+      "message": "Failed to connect to YouTube: {error}"
+    },
+    "screen_revoked": {
+      "message": "YouTube no longer accepts the TV's screen id; reconnect the TV."
+    },
+    "command_failed": {
+      "message": "Failed to send the command to the TV: {error}"
+    },
+    "invalid_video": {
+      "message": "\"{media_id}\" is not a YouTube video id or URL."
+    },
+    "no_subtitles_language": {
+      "message": "No subtitles language is known yet. Turn subtitles on once on the TV."
+    },
+    "no_video": {
+      "message": "No video is playing on the TV."
+    },
+    "launch_failed": {
+      "message": "Failed to open YouTube on the TV: {error}"
+    },
+    "stop_failed": {
+      "message": "Failed to close YouTube on the TV: {error}"
+    }
+  },
+  "device": {
+    "youtube_on_tv": {
+      "name": "YouTube on {tv_name}"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "ad_playing": {
+        "name": "Ad playing",
+        "state_attributes": {
+          "skippable": {
+            "name": "Skippable",
+            "state": {
+              "true": "Yes",
+              "false": "No"
+            }
+          }
+        }
+      },
+      "session": {
+        "name": "YouTube session"
+      }
+    },
+    "button": {
+      "skip_ad": {
+        "name": "Skip ad"
+      }
+    },
+    "sensor": {
+      "app_state": {
+        "name": "App state",
+        "state": {
+          "running": "Running",
+          "stopped": "Stopped",
+          "hidden": "In background",
+          "unreachable": "Unreachable"
+        }
+      },
+      "up_next": {
+        "name": "Up next"
+      },
+      "subtitles": {
+        "name": "Subtitles"
+      },
+      "video_quality": {
+        "name": "Video quality"
+      }
+    },
+    "switch": {
+      "autoplay": {
+        "name": "Autoplay"
+      },
+      "subtitles": {
+        "name": "Subtitles"
+      },
+      "session": {
+        "name": "Remote session"
+      }
+    },
+    "select": {
+      "playback_speed": {
+        "name": "Playback speed",
+        "state": {
+          "0_25": "0.25×",
+          "0_5": "0.5×",
+          "0_75": "0.75×",
+          "1": "Normal",
+          "1_25": "1.25×",
+          "1_5": "1.5×",
+          "1_75": "1.75×",
+          "2": "2×"
+        }
+      }
+    }
+  }
+}

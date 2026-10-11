@@ -1,0 +1,74 @@
+{
+    "0xc09b9efffe4b1e3a": {
+        "local_temperature_calibration": 0,
+        "child_lock": "UNLOCK",
+        "open_window": "OFF",
+        "frost_protection_temperature": 7,
+        "temperature_sensor_select": "external",
+        "idle_steps": 165,
+        "closing_steps": 336,
+        "valve_opening_limit_voltage": 1869,
+        "valve_closing_limit_voltage": 2945,
+        "valve_motor_running_voltage": 1426,
+        "temporary_mode_duration": 0,
+        "temporary_mode_select": "boost",
+        "external_temperature_input": 25.4,
+        "valve_opening_degree": 100,
+        "valve_closing_degree": 100,
+        "temperature_accuracy": -0.2,
+        "smart_temperature_control": false,
+        "occupied_heating_setpoint": 19,
+        "system_mode": "heat",
+        "local_temperature": 25.4,
+        "running_state": "idle",
+        "battery": 88,
+        "weekly_schedule_monday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_tuesday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_wednesday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_thursday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_friday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_saturday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "weekly_schedule_sunday": "00:00/23 06:30/24 07:00/23 23:00/22 23:00/22 23:00/22",
+        "update": {
+            "state": "idle",
+            "installed_version": 5124,
+            "latest_version": 5124,
+            "latest_source": "https://raw.githubusercontent.com/Koenkk/zigbee-OTA/master/images/Sonoff/trvzb_v1.4.4.ota",
+            "latest_release_notes": null
+        },
+        "linkquality": 120
+    },
+    "0xa4c1387fc1c3989d": {
+        "state": "ON",
+        "power_on_behavior": "off",
+        "backlight_mode": "inverted",
+        "linkquality": 68
+    },
+    "0x842712fffe485df3": {
+        "linkquality": 116
+    },
+    "0x00158d0000fd1e23": {
+        "contact": true,
+        "linkquality": 152
+    },
+    "0xf4b3b1fffe488713": {
+        "battery": 85,
+        "humidity": 42.8,
+        "temperature": 25.4,
+        "comfort_temperature_min": 19,
+        "comfort_temperature_max": 27,
+        "comfort_humidity_min": 40,
+        "comfort_humidity_max": 60,
+        "temperature_units": "celsius",
+        "temperature_calibration": 0,
+        "humidity_calibration": 0,
+        "update": {
+            "state": "idle",
+            "installed_version": 8960,
+            "latest_version": 8960,
+            "latest_source": "https://raw.githubusercontent.com/Koenkk/zigbee-OTA/master/images/Sonoff/snzb-02d_v2.3.0.ota",
+            "latest_release_notes": null
+        },
+        "linkquality": 84
+    }
+}

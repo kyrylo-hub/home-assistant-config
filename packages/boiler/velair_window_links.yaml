@@ -1,0 +1,51 @@
+# AUTO-GENERATED FILE
+# Source: /config/automations.yaml
+# Blueprint: cgonfer/window_pause.yaml
+# Do not edit manually.
+# Re-run generate_velair_window_links.py after changing
+# Velair window pause automations.
+
+template:
+  - sensor:
+      - name: Controller Balcony 7 87 linked windows
+        unique_id: controller_balcony_7_87_termostat_linked_windows
+        state: "3"
+        attributes:
+          climate_entity: 'climate.controller_balcony_7_87_termostat'
+          entities: >
+            {{ [
+              'binary_sensor.window_balcony_1_hobeian_zg_102z',
+              'binary_sensor.window_balcony_2',
+              'binary_sensor.balcony_door_mi_sensor'
+            ] }}
+
+      - name: Controller Children Room 3 82 linked windows
+        unique_id: controller_children_room_3_82_termostat_linked_windows
+        state: "1"
+        attributes:
+          climate_entity: 'climate.controller_children_room_3_82_termostat'
+          entities: >
+            {{ [
+              'binary_sensor.window_children_room'
+            ] }}
+
+      - name: Controller Diner Place 1 100 linked windows
+        unique_id: controller_diner_place_1_100_termostat_linked_windows
+        state: "2"
+        attributes:
+          climate_entity: 'climate.controller_diner_place_1_100_termostat'
+          entities: >
+            {{ [
+              'binary_sensor.kukhnia_window_kitchen_1',
+              'binary_sensor.windows_kitchen_2'
+            ] }}
+
+      - name: Controller Living Room 5 71 linked windows
+        unique_id: controller_living_room_5_71_termostat_linked_windows
+        state: "1"
+        attributes:
+          climate_entity: 'climate.controller_living_room_5_71_termostat'
+          entities: >
+            {{ [
+              'binary_sensor.window_living_room_5'
+            ] }}

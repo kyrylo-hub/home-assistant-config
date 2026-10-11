@@ -1,0 +1,193 @@
+timer:
+  boiler_single_trv_delay:
+    name: Boiler single TRV delay
+    duration: "00:10:00"
+
+input_datetime:
+  boiler_started_at:
+    name: Boiler started at
+    has_date: true
+    has_time: true
+
+  boiler_manual_started_at:
+    name: Boiler manual started at
+    has_date: true
+    has_time: true
+
+input_text:
+  boiler_waiting_trv:
+    name: Boiler waiting TRV
+    max: 255
+
+  boiler_cycle_trvs:
+    name: Boiler cycle TRVs
+    max: 255
+
+  boiler_start_reason:
+    name: Boiler start reason
+    max: 255
+
+  boiler_history:
+    name: Boiler history
+    max: 255
+    initial: Boiler Ariston
+
+input_boolean:
+  boiler_cycle_active:
+    name: Boiler cycle active
+
+  boiler_automation_enabled:
+    name: Boiler automation enabled
+    icon: mdi:robot
+
+  boiler_manual_session_active:
+    name: Boiler manual session active
+
+template:
+  - binary_sensor:
+      - name: Children controller heat demand
+        unique_id: children_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_children_room_3_82_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Dinner place controller heat demand
+        unique_id: dinner_place_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_diner_place_1_100_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Underfloor controller heat demand
+        unique_id: underfloor_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_underfloor_4_92_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Living room controller heat demand
+        unique_id: living_room_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_living_room_5_71_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Bad room controller heat demand
+        unique_id: bad_room_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.spalnia_bedroom_controller_2_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Bathroom controller heat demand
+        unique_id: bathroom_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_bathroom_6_92_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Balcony controller heat demand
+        unique_id: balcony_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_balcony_7_87_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+      - name: Hall controller heat demand
+        unique_id: hall_controller_heat_demand
+        state: >
+          {{
+            state_attr(
+              'climate.controller_hall_8_74_termostat',
+              'hvac_action'
+            ) == 'heating'
+          }}
+        icon: >
+          {{ 'mdi:radiator' if this.state == 'on' else 'mdi:radiator-disabled' }}
+
+  - sensor:
+      - name: Heating TRV count
+        unique_id: heating_trv_count
+        icon: mdi:radiator
+        state: >
+          {% set trvs = [
+            'climate.controller_children_room_3_82_termostat',
+            'climate.controller_diner_place_1_100_termostat',
+            'climate.controller_underfloor_4_92_termostat',
+            'climate.controller_living_room_5_71_termostat',
+            'climate.spalnia_bedroom_controller_2_termostat',
+            'climate.controller_bathroom_6_92_termostat',
+            'climate.controller_balcony_7_87_termostat',
+            'climate.controller_hall_8_74_termostat'
+          ] %}
+
+          {% set ns = namespace(count=0) %}
+
+          {% for trv in trvs %}
+            {% if state_attr(trv, 'hvac_action') == 'heating' %}
+              {% set ns.count = ns.count + 1 %}
+            {% endif %}
+          {% endfor %}
+
+          {{ ns.count }}
+
+      - name: Heating TRVs
+        unique_id: heating_trvs
+        icon: mdi:radiator
+        state: >
+          {% set trvs = {
+            'climate.controller_children_room_3_82_termostat': 'Children controller',
+            'climate.controller_diner_place_1_100_termostat': 'Dinner place controller',
+            'climate.controller_underfloor_4_92_termostat': 'Underfloor controller',
+            'climate.controller_living_room_5_71_termostat': 'Living room controller',
+            'climate.spalnia_bedroom_controller_2_termostat': 'Bad room controller',
+            'climate.controller_bathroom_6_92_termostat': 'Bathroom controller',
+            'climate.controller_balcony_7_87_termostat': 'Balcony controller',
+            'climate.controller_hall_8_74_termostat': 'Hall controller'
+          } %}
+
+          {% set ns = namespace(names=[]) %}
+
+          {% for entity_id, name in trvs.items() %}
+            {% if state_attr(entity_id, 'hvac_action') == 'heating' %}
+              {% set ns.names = ns.names + [name] %}
+            {% endif %}
+          {% endfor %}
+
+          {{ ns.names | join(', ') if ns.names else 'None' }}

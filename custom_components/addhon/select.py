@@ -1,0 +1,1789 @@
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""Haier hOn select: washer programs, writable program options, AC louvres,
+purifier aroma and panel light, and the induction hob's intake limit."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import logging
+
+from homeassistant.components.select import SelectEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .air_purifier import (
+    AP_AROMA_TO_OPTION,
+    AP_CUSTOM_AROMA,
+    AP_LIGHT_OPTION_ORDER,
+    AP_LIGHT_TO_OPTION,
+    AP_OPTION_TO_AROMA,
+    AP_OPTION_TO_LIGHT,
+    AirPurifierCapabilities,
+    ap_patch,
+    discover_capabilities,
+    environment_available,
+    raw_text,
+    reports_attribute,
+)
+from .base_entity import HonBaseEntity, coordinator_data_map
+from .command_dispatch import CommandPatch, async_dispatch_patch
+from .const import (
+    AC_ATTR_SWING_H,
+    AC_ATTR_SWING_V,
+    AC_SWING_H_PARAM,
+    AC_SWING_V_PARAM,
+    APPLIANCE_AC,
+    APPLIANCE_AP,
+    APPLIANCE_FR,
+    APPLIANCE_FRE,
+    APPLIANCE_HOB,
+    APPLIANCE_IH,
+    APPLIANCE_REF,
+    APPLIANCE_TD,
+    APPLIANCE_WASH_GROUP,
+    APPLIANCE_WD,
+    APPLIANCE_WM,
+    DIRTY_LEVEL_LABELS,
+    DOMAIN,
+    DRY_LEVEL_LABELS_TD,
+    DRY_LEVEL_LABELS_WM,
+    DRY_LEVEL_SENTINELS,
+    FAN_DIR_H_LABELS,
+    FAN_DIR_V_LABELS,
+    PROGRAM_PARAM_NAMES,
+    PROGRAM_PENDING_OPTIONS,
+    PROGRAM_PENDING_STORE,
+    STEAM_LEVEL_LABELS,
+    TEMP_LEVEL_LABELS,
+)
+from .debug_utils import redact_id, redact_store
+from .hob import HOB_POWER_LIMIT_PARAM, HOB_SETTINGS_COMMAND, power_limit_levels
+from .hon_commands import (
+    async_send_command,
+    command_param,
+    get_command,
+    param_range,
+)
+from .program_labels import for_coordinator
+from .ac_command import async_send_settings, param_allowed_values, settings_param
+from .program_options import (
+    HonProgramOptionEntity,
+    async_send_program,
+    normalize_code,
+    option_choices,
+)
+from .ref_programs import (
+    REF_MY_ZONE_PARAM,
+    REF_MY_ZONE_ZONE,
+    REF_PARAM_TO_FLAG,
+    STOPPROGRAM,
+    flag_codes,
+    has_replacement_controls,
+    my_zone_code_for_value,
+    my_zone_codes,
+    residual_codes,
+)
+
+# Air purifier aroma: the state attribute and the two custom-timing parameters.
+_AROMA_ATTR = "aromaStatus"
+_AROMA_TIME_ON_ATTR = "aromaTimeOn"
+_AROMA_TIME_OFF_ATTR = "aromaTimeOff"
+_LIGHT_ATTR = "lightStatus"
+
+# Fridge family (REF/FR/FRE): the writable program/mode select (discussion #40).
+_COOLING_TYPES = (APPLIANCE_REF, APPLIANCE_FR, APPLIANCE_FRE)
+# Synthetic "no program" option -> stopProgram (the global mode reset).
+REF_PROGRAM_OFF = "off"
+# Read-back ONLY: a live device mode flag (0/1) -> the startProgram program code it
+# corresponds to. Used to derive current_option from the device truth (never from
+# startProgram.program, which only carries the recovered default category). The app's own
+# identity map (refrigeration.md section 1): superCool=quickModeZ1, superFreeze=quickModeZ2,
+# holiday=holidayMode, autoSet=intelligenceMode. Double-gated at read time: the code must
+# also be in the device's live program enum.
+#
+# A VIEW of `ref_programs.REF_FLAG_TO_PARAM`, not a second copy. The same pairing now
+# also decides which flags become switches and therefore whether this select is built at
+# all (#93), and two independent spellings of it would let the entity that steps aside
+# and the entities that replace it disagree about which flags exist. The local name
+# stays because it reads as this class's own vocabulary at the two sites below.
+_REF_MODE_FLAG_TO_PROGRAM: dict[str, str] = dict(REF_PARAM_TO_FLAG)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def disambiguate_labels(base: dict[str, str]) -> dict[str, str]:
+    """Make a ``code -> label`` map collision-safe for a select's options.
+
+    Two codes sharing a display label would collapse in the reverse map, leaving one code
+    unreachable from the UI and mapping the lost code's current_option onto the survivor.
+    Suffix ONLY the colliding labels with their code so every code stays selectable and the
+    reverse map is injective; unique labels are untouched (they keep their translatable
+    string). Insertion order is preserved. Shared by every select that builds options from a
+    code/label map (program, program-option, AC direction) so the behavior can't drift."""
+    counts: dict[str, int] = {}
+    for label in base.values():
+        counts[label] = counts.get(label, 0) + 1
+    return {
+        code: (f"{label} ({code})" if counts[label] > 1 else label)
+        for code, label in base.items()
+    }
+
+
+@dataclass(frozen=True, kw_only=True)
+class HonProgramOptionSelectDescription:
+    """A categorical program option rendered as a select (#35).
+
+    `label_map` maps raw schema values -> machine keys for the select state translations
+    (None = render the raw values, used for the numeric spin/temp enums). `drop` removes
+    unselectable sentinels. `types` gates the appliance families; dryLevel is TYPE-GATED
+    (WM/WD vs TD) because value 1 means EXTRA_DRY on WM/WD but IRON_DRY on TD, so the two
+    descriptions share the `dry_level` translation_key but carry disjoint label maps.
+    """
+
+    key: str                 # base of the unique_id suffix (opt_<key>)
+    param: str
+    translation_key: str
+    types: tuple[str, ...]
+    label_map: dict[str, str] | None = None
+    drop: tuple[str, ...] = ()
+    icon: str | None = None
+
+
+_WASH_TYPES = (APPLIANCE_WM, APPLIANCE_WD)
+_DRY_TYPES = (APPLIANCE_TD,)
+
+# Candidate program-option selects, capability-gated by the device schema. spin/temp are
+# numeric enums on the real washers -> selects with raw numeric labels (no state block).
+# dryLevel/tempLevel/dirtyLevel/steamLevel are label-mapped (state translations).
+_PROGRAM_OPTION_SELECTS: tuple[HonProgramOptionSelectDescription, ...] = (
+    HonProgramOptionSelectDescription(
+        key="spin_speed", param="spinSpeed", translation_key="spin_speed",
+        types=_WASH_TYPES, icon="mdi:speedometer",
+    ),
+    HonProgramOptionSelectDescription(
+        key="wash_temp", param="temp", translation_key="wash_temp",
+        types=_WASH_TYPES, icon="mdi:thermometer",
+    ),
+    HonProgramOptionSelectDescription(
+        key="dry_level", param="dryLevel", translation_key="dry_level",
+        types=_WASH_TYPES, label_map=DRY_LEVEL_LABELS_WM, drop=DRY_LEVEL_SENTINELS,
+        icon="mdi:tumble-dryer",
+    ),
+    HonProgramOptionSelectDescription(
+        key="dry_level", param="dryLevel", translation_key="dry_level",
+        types=_DRY_TYPES, label_map=DRY_LEVEL_LABELS_TD, drop=DRY_LEVEL_SENTINELS,
+        icon="mdi:tumble-dryer",
+    ),
+    HonProgramOptionSelectDescription(
+        key="temp_level", param="tempLevel", translation_key="temp_level",
+        types=_DRY_TYPES, label_map=TEMP_LEVEL_LABELS, icon="mdi:thermometer",
+    ),
+    HonProgramOptionSelectDescription(
+        key="dirty_level", param="dirtyLevel", translation_key="dirty_level",
+        types=_WASH_TYPES, label_map=DIRTY_LEVEL_LABELS, icon="mdi:liquid-spot",
+    ),
+    HonProgramOptionSelectDescription(
+        key="steam_level", param="steamLevel", translation_key="steam_level",
+        types=_WASH_TYPES, label_map=STEAM_LEVEL_LABELS, icon="mdi:weather-fog",
+    ),
+)
+
+@dataclass(frozen=True, kw_only=True)
+class HonAcDirectionSelectDescription:
+    """A manual AC fan-direction (louver position) select (#37).
+
+    ``param`` is the settings-command parameter to WRITE (windDirectionVertical /
+    windDirectionHorizontal); ``attr`` is the dotted READ path of the live value;
+    ``label_map`` is the SUPERSET raw-value -> option-key map (offered options are the
+    live per-model enum mapped through it, with the raw number as a forward-safe
+    fallback for an unmapped value). Vertical and horizontal carry distinct
+    translation_keys so their overlapping numbers never collide.
+    """
+
+    key: str
+    param: str
+    attr: str
+    translation_key: str
+    label_map: dict[str, str]
+    icon: str
+
+
+# Candidate AC fan-direction selects, capability-gated per device by
+# _supports_direction_select on the LIVE settings enum. The two axes are SYMMETRIC (see
+# FAN_DIR_*_LABELS): each exposes fixed louver positions plus exactly one swing value --
+# value 8 on the vertical axis, value 7 on the horizontal axis. The vertical 8=swing
+# coexists by design with the climate swing_mode (on/off) entity (both write the SAME
+# windDirectionVertical param).
+_AC_DIRECTION_SELECTS: tuple[HonAcDirectionSelectDescription, ...] = (
+    HonAcDirectionSelectDescription(
+        key="fan_direction_vertical",
+        param=AC_SWING_V_PARAM,
+        attr=AC_ATTR_SWING_V,
+        translation_key="fan_direction_vertical",
+        label_map=FAN_DIR_V_LABELS,
+        icon="mdi:arrow-up-down",
+    ),
+    HonAcDirectionSelectDescription(
+        key="fan_direction_horizontal",
+        param=AC_SWING_H_PARAM,
+        attr=AC_ATTR_SWING_H,
+        translation_key="fan_direction_horizontal",
+        label_map=FAN_DIR_H_LABELS,
+        icon="mdi:arrow-left-right",
+    ),
+)
+
+
+def _supports_direction_select(param) -> bool:
+    """True iff ``param`` is a real, adjustable position control.
+
+    A manual fan-direction control exists only when the settings param is a WRITABLE
+    enum with more than one option. The fixed-typology trap is excluded explicitly
+    (AS68PDAHRA horizontal: typology=fixed, enum=[0]) so a non-adjustable louver is
+    never surfaced; the >1 guard also drops a degenerate single-value enum. The enum
+    itself is always read live (param_allowed_values), never hard-coded.
+    """
+    if param is None:
+        return False
+    if getattr(param, "typology", "") == "fixed":
+        return False
+    return len(param_allowed_values(param)) > 1
+
+
+# "Safe" commands (they do not start a cycle) to read/write the program from.
+PROGRAM_SELECT_COMMANDS = ("settings", "setProgram", "setProgramme", "programSettings")
+# Commands to DRAW the program list from. We also include startProgram as a
+# metadata source: the selection is decoupled from the start (see
+# async_select_option), so reading the options from startProgram does NOT start
+# the appliance. Without this, the washers/dryers that expose the program only
+# via startProgram were left without a select (orphan "unavailable" entity).
+PROGRAM_SOURCE_COMMANDS = PROGRAM_SELECT_COMMANDS + ("startProgram",)
+
+
+def _command_names(appliance) -> list[str]:
+    commands = getattr(appliance, "commands", None)
+    return sorted(commands.keys()) if isinstance(commands, dict) else []
+
+
+def _param_names(command) -> list[str]:
+    params = getattr(command, "parameters", None)
+    return sorted(params.keys()) if isinstance(params, dict) else []
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    # FIX: consistent access to the hass.data[DOMAIN][entry_id]["coordinator"] structure
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry_data["coordinator"]
+    client = entry_data["client"]
+    entities = []
+    data_map = coordinator_data_map(coordinator)
+    for appliance_id, data in data_map.items():
+        appliance = data.get("appliance")
+        app_type = data.get("type")
+        _LOGGER.debug(
+            "Select debug: evaluating appliance '%s' id=%s type=%s commands=%s",
+            data.get("name"),
+            redact_id(appliance_id),
+            app_type,
+            _command_names(appliance),
+        )
+        if app_type in _COOLING_TYPES:
+            # Fridge family. Two selects, and they are mutually exclusive by design.
+            #
+            # The My Zone drawer mode (#93) is the faithful control where the model
+            # declares the drawer AND its catalogue carries the drawer's programs. Not
+            # gated on the shadow, unlike `sensor.my_zone_mode`: the WRITE channel here
+            # is `startProgram`, which the catalogue proves exists, so a shadow that
+            # never mirrors `tempSelZ3` costs the read-back and not the control. That is
+            # the same rule `HonHobPowerLimitSelect` follows -- gated on the write
+            # schema, unknown for a value it cannot interpret, never a false map and
+            # never a raise.
+            # No extra condition here, deliberately. The model-zone test used to live at
+            # this call site, which made `has_replacement_controls` -- the predicate that
+            # decides whether `select.ref_program` steps aside -- answer a DIFFERENT
+            # question from the one that decides whether the replacement is built. On a
+            # catalogue declaring `vtZone` but no `zones` the two disagreed and the
+            # appliance ended up with no drawer control at all. The test now lives inside
+            # `my_zone_codes`, where both callers see it.
+            my_zone = my_zone_codes(appliance)
+            if my_zone:
+                entities.append(
+                    HonRefMyZoneSelect(coordinator, appliance_id, my_zone, client)
+                )
+                _LOGGER.info(
+                    "Added REF My Zone select: id=%s modes=%s",
+                    redact_id(appliance_id),
+                    my_zone,
+                )
+            else:
+                _LOGGER.debug(
+                    "Select debug: no My Zone select for '%s' id=%s; needs "
+                    "model zones to declare %s AND a startProgram category that pins "
+                    "%s, is zoned on the drawer alone, and is not a download preset",
+                    data.get("name"),
+                    redact_id(appliance_id),
+                    REF_MY_ZONE_ZONE,
+                    REF_MY_ZONE_PARAM,
+                )
+            # The single program select (#40) survives ONLY where nothing better exists.
+            # See `HonRefProgramSelect.supports_appliance` for the whole argument; the
+            # short version is that on a fridge that gets the flag switches or the drawer
+            # select it is not redundant, it is wrong -- a mutually-exclusive dropdown
+            # over registers the appliance drives independently.
+            if HonRefProgramSelect.supports_appliance(appliance):
+                entities.append(HonRefProgramSelect(coordinator, appliance_id, client))
+                _LOGGER.info("Added REF program select: id=%s", redact_id(appliance_id))
+            else:
+                _LOGGER.debug(
+                    "Select debug: no REF program select for '%s' id=%s; "
+                    "needs startProgram(program enum) + stopProgram, and no per-mode "
+                    "control (flag switches / My Zone select) on this same appliance",
+                    data.get("name"),
+                    redact_id(appliance_id),
+                )
+            continue
+        if app_type == APPLIANCE_AP:
+            attributes = data.get("attributes")
+            attributes = attributes if isinstance(attributes, dict) else {}
+            capabilities = discover_capabilities(appliance, attributes)
+            if capabilities.aroma_options and reports_attribute(
+                attributes, _AROMA_ATTR
+            ):
+                entities.append(
+                    HonAirPurifierAromaSelect(
+                        coordinator, appliance_id, capabilities, client
+                    )
+                )
+                _LOGGER.info("Added AP aroma select: id=%s", redact_id(appliance_id))
+            else:
+                _LOGGER.debug(
+                    "Select debug: no aroma select for id=%s (options=%s state=%s)",
+                    redact_id(appliance_id),
+                    capabilities.aroma_options,
+                    reports_attribute(attributes, _AROMA_ATTR),
+                )
+            # The panel light is gated the same way: the write schema through the
+            # capability, the read state through the reported attribute.
+            if capabilities.supports_light and reports_attribute(
+                attributes, _LIGHT_ATTR
+            ):
+                entities.append(
+                    HonAirPurifierPanelLightSelect(
+                        coordinator, appliance_id, capabilities, client
+                    )
+                )
+                _LOGGER.info(
+                    "Added AP panel light select: id=%s", redact_id(appliance_id)
+                )
+            else:
+                _LOGGER.debug(
+                    "Select debug: no panel light select for id=%s "
+                    "(writable=%s values=%s state=%s)",
+                    redact_id(appliance_id),
+                    capabilities.supports_light,
+                    sorted(capabilities.light_values),
+                    reports_attribute(attributes, _LIGHT_ATTR),
+                )
+            continue
+        if app_type in (APPLIANCE_IH, APPLIANCE_HOB):
+            # The hob's only writable control (#84.1). Capability-gated on the live
+            # schema; the kW labels come from the model catalogue's `series`.
+            model_attributes = getattr(appliance, "model_attributes", None)
+            series = (
+                model_attributes.get("series")
+                if isinstance(model_attributes, dict)
+                else None
+            )
+            levels = power_limit_levels(appliance, series)
+            if levels:
+                entities.append(
+                    HonHobPowerLimitSelect(
+                        coordinator, appliance_id, levels, client
+                    )
+                )
+                _LOGGER.info(
+                    "Added hob power-limit select: id=%s", redact_id(appliance_id)
+                )
+            else:
+                _LOGGER.debug(
+                    "Select debug: no hob power-limit select for id=%s "
+                    "(series=%s params=%s)",
+                    redact_id(appliance_id),
+                    series,
+                    _param_names(
+                        getattr(appliance, "commands", {}).get(HOB_SETTINGS_COMMAND)
+                        if isinstance(getattr(appliance, "commands", None), dict)
+                        else None
+                    ),
+                )
+            continue
+        if app_type == APPLIANCE_AC:
+            # Manual fan-direction position selects (#37), capability-gated on the
+            # live per-model settings enum (vertical and/or horizontal independently).
+            # AC falls through here today with no select; the climate swing_mode
+            # (on/off) entity is intentionally left untouched (coexistence by design).
+            created_dirs: list[str] = []
+            for desc in _AC_DIRECTION_SELECTS:
+                if not _supports_direction_select(settings_param(appliance, desc.param)):
+                    continue
+                entities.append(
+                    HonAcDirectionSelect(coordinator, appliance_id, desc, client)
+                )
+                created_dirs.append(desc.key)
+            if created_dirs:
+                _LOGGER.info(
+                    "Added %d AC fan-direction selects: id=%s -> %s",
+                    len(created_dirs),
+                    redact_id(appliance_id),
+                    created_dirs,
+                )
+            else:
+                _LOGGER.debug(
+                    "Select debug: no AC fan-direction selects for id=%s type=%s",
+                    redact_id(appliance_id),
+                    app_type,
+                )
+            continue
+        if app_type not in APPLIANCE_WASH_GROUP:
+            _LOGGER.debug("Select debug: appliance id=%s ignored, type=%s", redact_id(appliance_id), app_type)
+            continue
+        if HonProgramSelect.supports_appliance(appliance):
+            entities.append(HonProgramSelect(coordinator, appliance_id, client))
+            _LOGGER.info("Added program select: id=%s", redact_id(appliance_id))
+        else:
+            _LOGGER.debug(
+                "Select debug: no program select for '%s' id=%s; "
+                "no source command with parameters %s",
+                data.get("name"),
+                redact_id(appliance_id),
+                PROGRAM_PARAM_NAMES,
+            )
+        # Writable program-option selects (#35): capability-gated on the live schema.
+        created_opts: list[str] = []
+        for desc in _PROGRAM_OPTION_SELECTS:
+            if app_type not in desc.types:
+                continue
+            if not HonProgramOptionSelect.supports(appliance, desc.param, desc.drop):
+                continue
+            entities.append(HonProgramOptionSelect(coordinator, appliance_id, desc, client))
+            created_opts.append(desc.key)
+        if created_opts:
+            _LOGGER.info(
+                "Added %d program-option selects: id=%s",
+                len(created_opts),
+                redact_id(appliance_id),
+            )
+        _LOGGER.debug(
+            "Select debug: option selects for id=%s type=%s -> %s",
+            redact_id(appliance_id),
+            app_type,
+            created_opts,
+        )
+    async_add_entities(entities)
+
+
+class HonProgramSelect(HonBaseEntity, SelectEntity):
+    """Select for the washer/dryer program selection."""
+
+    _attr_icon = "mdi:format-list-bulleted"
+
+    def __init__(self, coordinator, appliance_id: str, client=None) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._attr_unique_id = f"{appliance_id}_program"
+        self._attr_translation_key = "program"
+
+        self._program_map: dict[str, str] = {}
+        appliance = self._appliance
+        if appliance is not None:
+            self._program_map = self._load_programs(appliance)
+
+        # Readable program names (#71). The schema gives no labels -- `_load_programs`
+        # can only echo the code back -- so `hqd_autoclean` reached the UI verbatim.
+        # Translation is applied HERE, to the DISPLAY map only: `_program_map`'s keys
+        # (and therefore everything the send path uses) stay the raw hOn codes.
+        # Untranslatable entries keep their current text, which is what preserves the
+        # user's own names for favourite/downloaded programs.
+        self._program_map = for_coordinator(coordinator).apply(
+            self._appliance_data.get("type"), self._program_map
+        )
+
+        # Disambiguate collided labels so every program CODE stays selectable and the
+        # reverse map is injective (two codes sharing a display label would otherwise
+        # collapse, leaving one program unreachable and mapping current_option of the lost
+        # code onto the survivor). See disambiguate_labels.
+        self._program_display: dict[str, str] = disambiguate_labels(self._program_map)
+        self._program_reverse: dict[str, str] = {
+            display: code for code, display in self._program_display.items()
+        }
+        self._attr_options = list(self._program_display.values())
+        _LOGGER.debug(
+            "Select debug: initialized '%s' id=%s programs=%d map=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            len(self._program_map),
+            self._program_map,
+        )
+
+    @classmethod
+    def supports_appliance(cls, appliance) -> bool:
+        """True if there is a command (including startProgram) with a populated
+        program parameter from which to build the option list."""
+        command_info = cls._find_program_command(appliance)
+        if command_info is None:
+            _LOGGER.debug(
+                "Select debug: supports_appliance=False, no program command. commands=%s",
+                _command_names(appliance),
+            )
+            return False
+        _, command, param_name = command_info
+        values = cls._program_values(command, param_name)
+        _LOGGER.debug(
+            "Select debug: supports_appliance command param=%s values_count=%d params=%s",
+            param_name,
+            len(values),
+            _param_names(command),
+        )
+        return bool(values)
+
+    @staticmethod
+    def _find_program_command(appliance):
+        if appliance is None:
+            return None
+        commands = getattr(appliance, "commands", None)
+        commands = commands if isinstance(commands, dict) else {}
+        for command_name in PROGRAM_SOURCE_COMMANDS:
+            command = commands.get(command_name)
+            if command is None:
+                _LOGGER.debug("Select debug: source command '%s' absent", command_name)
+                continue
+            params = getattr(command, "parameters", None)
+            if not isinstance(params, dict):
+                _LOGGER.debug(
+                    "Select debug: source command '%s' without parameters dict: %s",
+                    command_name,
+                    type(params).__name__,
+                )
+                continue
+            for param_name in PROGRAM_PARAM_NAMES:
+                if param_name in params:
+                    _LOGGER.debug(
+                        "Select debug: found program command '%s' parameter '%s' params=%s",
+                        command_name,
+                        param_name,
+                        sorted(params.keys()),
+                    )
+                    return command_name, command, param_name
+        return None
+
+    @staticmethod
+    def _program_values(command, param_name: str) -> dict[str, str]:
+        params = getattr(command, "parameters", {})
+        prog_param = params.get(param_name) if isinstance(params, dict) else None
+        if prog_param is None:
+            _LOGGER.debug("Select debug: program parameter '%s' absent", param_name)
+            return {}
+        for attr in ("values", "value_list", "options"):
+            raw = getattr(prog_param, attr, None)
+            if isinstance(raw, dict):
+                values = {str(code): str(label) for code, label in raw.items()}
+                _LOGGER.debug(
+                    "Select debug: program values from attr '%s' dict count=%d values=%s",
+                    attr,
+                    len(values),
+                    values,
+                )
+                return values
+            if isinstance(raw, (list, tuple)):
+                values = {str(value): str(value) for value in raw}
+                _LOGGER.debug(
+                    "Select debug: program values from attr '%s' list count=%d values=%s",
+                    attr,
+                    len(values),
+                    values,
+                )
+                return values
+        _LOGGER.debug("Select debug: no values/value_list/options for parameter '%s'", param_name)
+        return {}
+
+    @staticmethod
+    def _load_programs(appliance) -> dict[str, str]:
+        try:
+            command_info = HonProgramSelect._find_program_command(appliance)
+            if command_info is None:
+                _LOGGER.debug("Select debug: _load_programs without command_info")
+                return {}
+            command_name, command, param_name = command_info
+            values = HonProgramSelect._program_values(command, param_name)
+            if not values:
+                _LOGGER.debug(
+                    "Select debug: _load_programs command '%s' parameter '%s' without values",
+                    command_name,
+                    param_name,
+                )
+                return {}
+            programs = {
+                str(code): str(label) if label else str(code)
+                for code, label in values.items()
+            }
+            _LOGGER.debug(
+                "Select debug: _load_programs from command '%s' parameter '%s': %s",
+                command_name,
+                param_name,
+                programs,
+            )
+            return programs
+        except Exception as err:
+            _LOGGER.debug("Error loading dynamic programs: %s", err)
+            return {}
+
+    @property
+    def current_option(self) -> str | None:
+        # 1) Choice awaiting start ("set only"): we show it immediately,
+        #    until the user starts the cycle with the "Avvia programma" button.
+        pending = self._coordinator_store(PROGRAM_PENDING_STORE).get(self._appliance_id)
+        if pending is not None:
+            label = self._program_display.get(str(pending))
+            if label is not None:
+                _LOGGER.debug(
+                    "Select debug: current_option uses pending id=%s code=%s label=%s",
+                    redact_id(self._appliance_id),
+                    pending,
+                    label,
+                )
+                return label
+            _LOGGER.debug(
+                "Select debug: current_option pending id=%s code=%s not present in map=%s",
+                redact_id(self._appliance_id),
+                pending,
+                self._program_map,
+            )
+
+        # 2) Real state from the device. We try both the program name and the code
+        #    (prCode/program) and use the first that matches a known option.
+        #    FIX: check is not None instead of 'or', which would discard 0.
+        #    Order: first the keys that expose the program NAME (mappable when the
+        #    option list is built from a list of names, as on the real models),
+        #    then the numeric prCode codes. So, when the device publishes a numeric
+        #    prCode not present in the per-name map, resolution happens directly on
+        #    the name without generating DEBUG noise "not mapped" for a code that
+        #    would not be mappable anyway.
+        for key in (
+            "programName",
+            "settings.program",
+            "startProgram.program",
+            "program",
+            "settings.prCode",
+            "startProgram.prCode",
+            "prCode",
+        ):
+            val = self._get_attr(key)
+            if val is None:
+                _LOGGER.debug("Select debug: current_option key '%s' absent", key)
+                continue
+            token = str(val)
+            # token may be a code (a map key) or already a label (e.g. programName
+            # exposes the program name).
+            if token in self._program_map:
+                _LOGGER.debug(
+                    "Select debug: current_option key '%s' token code=%s label=%s",
+                    key,
+                    token,
+                    self._program_display[token],
+                )
+                return self._program_display[token]
+            if token in self._program_reverse:
+                _LOGGER.debug(
+                    "Select debug: current_option key '%s' token label=%s",
+                    key,
+                    token,
+                )
+                return token
+            _LOGGER.debug(
+                "Select debug: current_option key '%s' token=%s not mapped; map=%s",
+                key,
+                token,
+                self._program_map,
+            )
+        _LOGGER.debug("Select debug: current_option not available for id=%s", redact_id(self._appliance_id))
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        code = self._program_reverse.get(option)
+        if code is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="program_not_found",
+                translation_placeholders={"program": option},
+            )
+        # "Set only": we store the choice WITHOUT sending any command.
+        # Selecting a program must never start the appliance; the start happens
+        # with the "Avvia programma" button, which reads this pending program and
+        # applies it to the startProgram command.
+        store = self._coordinator_store(PROGRAM_PENDING_STORE)
+        previous_code = store.get(self._appliance_id)
+        _LOGGER.debug(
+            "Select debug: before selection option=%s code=%s store=%s",
+            option,
+            code,
+            redact_store(store),
+        )
+        store[self._appliance_id] = code
+        # Changing the program invalidates any buffered program OPTIONS: they were chosen
+        # for the previous program and must not silently carry into the new one at Start
+        # (PR #38 / Greptile P1). Clear them ONLY on an actual program change, so
+        # re-selecting the SAME program keeps the user's buffered options.
+        cleared = (
+            self._coordinator_store(PROGRAM_PENDING_OPTIONS).pop(self._appliance_id, None)
+            if previous_code != code
+            else None
+        )
+        _LOGGER.info(
+            "Select: program '%s' (code=%s) set; start it with 'Avvia programma'",
+            option, code,
+        )
+        if cleared:
+            _LOGGER.debug(
+                "Select debug: program change id=%s cleared pending options=%s",
+                redact_id(self._appliance_id),
+                sorted(cleared) if isinstance(cleared, dict) else None,
+            )
+        _LOGGER.debug("Select debug: after selection store=%s", redact_store(store))
+        # Re-render the WHOLE coordinator, not just this select. The option entities now
+        # derive their value set, range and on/off tokens from the pending program
+        # (`HonProgramOptionEntity._selected_option_param`), and their buffered values were
+        # just cleared above -- neither is visible until something writes their state, so a
+        # bare `self.async_write_ha_state()` left every option control showing the previous
+        # program's choices until the next poll, up to a whole scan interval later. A user
+        # picking one of those stale values would then be refused by the write-time check
+        # (PR #103 review, greptile P1).
+        #
+        # The coordinator broadcast is deliberately preferred over a dispatcher signal: it
+        # is exactly what every poll already does, costs one state write per entity and no
+        # I/O, and needs no per-entity subscribe/unsubscribe bookkeeping. It is wider than
+        # this appliance (the account's other appliances re-render too), which is the price
+        # paid for not introducing a signal layer for a single caller.
+        #
+        # This select's own state rides along: a CoordinatorEntity registers
+        # `_handle_coordinator_update` as a listener when it is added to hass, so the
+        # broadcast covers it and a separate `async_write_ha_state()` would only write it
+        # twice.
+        self.coordinator.async_update_listeners()
+
+
+class HonProgramOptionSelect(HonProgramOptionEntity, SelectEntity):
+    """Categorical program option (dry level, spin speed, soil level, ...) buffered onto
+    the startProgram command; applied + sent on the "Start program" button."""
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        description: HonProgramOptionSelectDescription,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, description.param, client)
+        self._desc = description
+        self._attr_translation_key = description.translation_key
+        self._attr_unique_id = f"{appliance_id}_opt_{description.key}"
+        if description.icon:
+            self._attr_icon = description.icon
+        self._label_map = description.label_map or {}
+        # The option set is rebuilt whenever the resolved parameter changes -- which is what
+        # selecting another program does, since each startProgram category carries its own
+        # parameter object (issue #98). Built eagerly here so a construction-time schema
+        # error surfaces at setup rather than on the first frontend read.
+        self._raw_to_key: dict[str, str] = {}
+        self._key_to_raw: dict[str, str] = {}
+        self._maps_param = None
+        self._maps_built = False
+        self._rebuild_maps()
+        _LOGGER.debug(
+            "Select debug: init option select '%s' id=%s param=%s options=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            description.param,
+            list(self._raw_to_key.values()),
+        )
+
+    def _rebuild_maps(self) -> None:
+        """Rebuild the raw<->label maps from the parameter of the SELECTED program.
+
+        Memoized on the resolved parameter OBJECT (compared with ``is``, so no id() reuse
+        can alias two categories, and the reference keeps the object alive to guarantee
+        it): a program change resolves to a different category's parameter and rebuilds,
+        while a program that does not narrow this option resolves to the same merged
+        parameter and costs one identity check."""
+        param = self._selected_option_param(self._desc.drop)
+        if self._maps_built and param is self._maps_param:
+            return
+        self._maps_param = param
+        self._maps_built = True
+        choices = option_choices(param, self._desc.drop) if param is not None else []
+        # raw schema value -> base label (label map, raw value as fallback).
+        base_keys = {raw: self._label_map.get(raw, raw) for raw in choices}
+        # Collision-aware disambiguation (PR #38 / Greptile P2): when two EXPOSED raw codes
+        # share a label (DRY_LEVEL_LABELS_TD maps e.g. 1 & 12 both to "iron_dry"), suffixing
+        # ONLY the colliding ones with their raw code keeps every code selectable and keeps
+        # the reverse map injective. Non-colliding labels keep their translatable
+        # `state.<key>`; a suffixed colliding key renders literally (rare-model-only).
+        self._raw_to_key = disambiguate_labels(base_keys)
+        self._key_to_raw = {key: raw for raw, key in self._raw_to_key.items()}
+
+    def _renderable(self, raw) -> bool:
+        # A prescribed code this select does not offer would blank the entity; the device
+        # reading is the honest answer instead. Real on the reporter's dump: `delicati_59`
+        # pins temp to a code the merged control does not carry.
+        self._rebuild_maps()
+        return normalize_code(raw) in self._raw_to_key
+
+    @property
+    def options(self) -> list[str]:
+        # One distinct option per exposed raw code (keys are unique; order preserved).
+        self._rebuild_maps()
+        return list(self._raw_to_key.values())
+
+    @property
+    def current_option(self) -> str | None:
+        raw = self._current_raw()
+        if raw is None:
+            return None
+        self._rebuild_maps()
+        # None when the live device value is outside what the SELECTED program offers (the
+        # machine still reports the finished cycle's setting). HA renders that as unknown,
+        # which is honest: the value is not one the pending program would accept.
+        return self._raw_to_key.get(normalize_code(raw))
+
+    async def async_select_option(self, option: str) -> None:
+        self._rebuild_maps()
+        raw = self._key_to_raw.get(option)
+        if raw is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": option,
+                    "allowed": ", ".join(self._raw_to_key.values()),
+                },
+            )
+        self._buffer(raw)
+
+
+class HonRefProgramSelect(HonBaseEntity, SelectEntity):
+    """Writable program/mode select for fridges (REF/FR/FRE), discussion #40.
+
+    Fridge "modes" (super cool, super freeze, holiday, plus the iot_* presets) are NOT
+    writable settings booleans: they are ``startProgram`` PROGRAMS, cleared by
+    ``stopProgram`` (a GLOBAL reset that zeroes every mode flag). The app/cloud model is
+    mutually exclusive (one program at a time), so the faithful HA shape is a single
+    select. Options are ``off`` plus the device's LIVE ``startProgram.program`` enum
+    (capability-gated, never hard-coded). Unlike the washer select, selecting here sends
+    IMMEDIATELY (no buffer/Start-button cycle): a program -> ``startProgram(program=X)``,
+    ``off`` -> ``stopProgram``. ``current_option`` is derived from REAL device feedback:
+    first the live mode FLAGS (boost modes), then the cloud-persisted active-program
+    field ``programName``/``prStr``/``prCode`` - never optimistic state and never
+    ``startProgram.program`` (the recovered default category, which would otherwise pin
+    a phantom mode forever). An active iot_* preset (which sets no flag) is NOT recoverable
+    from the cloud shadow -- it leaves no program-identity field, and the official app only
+    tracks it client-side -- so it correctly falls back to ``off`` (see
+    ``_active_program_code``)."""
+
+    _attr_icon = "mdi:snowflake"
+
+    def __init__(self, coordinator, appliance_id: str, client=None) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._attr_unique_id = f"{appliance_id}_ref_program"
+        self._attr_translation_key = "ref_program"
+        # Build the option list from the live program enum read SPECIFICALLY off the
+        # startProgram command -- the same command async_send_program targets -- so the
+        # option SOURCE can never diverge from the SEND target (a fridge could in theory
+        # also expose another program-bearing command; we deliberately ignore it here).
+        self._program_codes: list[str] = []
+        resolved = self._start_program_param(self._appliance)
+        if resolved is not None:
+            command, param_name = resolved
+            self._program_codes = list(
+                HonProgramSelect._program_values(command, param_name).keys()
+            )
+        # PARTIAL replacement: carry ONLY what the per-mode controls do not.
+        #
+        # `has_replacement_controls` already refuses to build this entity when the
+        # switches, the drawer select and the preset buttons cover the whole enum, which
+        # is the case on every catalogue this repository holds. It permits the entity
+        # when they do NOT -- and then a full option list would put two controls on the
+        # same registers (this select and the switch would both own the flag, and the
+        # select's exclusivity would make picking one mode read as stopping the others),
+        # and would hand back the drawer codes that `select.my_zone_mode` already owns.
+        #
+        # The `off` no longer widens that overlap: it names the flags of the programs it
+        # offers and nothing else. It used to be a bare full-command `stopProgram`, i.e.
+        # the four-flag reset, which turned the overlap into an active regression.
+        #
+        # Restricting to the residual keeps both properties at once: no register has two
+        # writers, and no offered program is left with no control at all. It also drops
+        # the user's saved favourites from the list -- `residual_codes` is computed over
+        # catalogue programs only -- which is the correct side to err on for a value
+        # that is free text the user typed.
+        # Only when the residual is NON-EMPTY. An empty one means the replacements
+        # cover the enum, `supports_appliance` refuses the entity and production never
+        # reaches here; narrowing the list to nothing in that case would only break a
+        # direct construction of this class into a select with no options at all.
+        if flag_codes(self._appliance) or my_zone_codes(self._appliance):
+            residual = set(residual_codes(self._appliance))
+            if residual:
+                self._program_codes = [
+                    code for code in self._program_codes if code in residual
+                ]
+        self._attr_options = [REF_PROGRAM_OFF, *self._program_codes]
+        _LOGGER.debug(
+            "Select debug: initialized REF program '%s' id=%s options=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            self._attr_options,
+        )
+
+    @staticmethod
+    def _start_program_param(appliance):
+        """(startProgram command, program-param name), or None.
+
+        Resolved ONLY on ``startProgram`` (not the broader PROGRAM_SOURCE_COMMANDS walk the
+        washer uses) so the fridge select's option source is always the very command it
+        sends to."""
+        commands = getattr(appliance, "commands", None)
+        commands = commands if isinstance(commands, dict) else {}
+        command = commands.get("startProgram")
+        params = getattr(command, "parameters", None) if command is not None else None
+        if not isinstance(params, dict):
+            return None
+        for param_name in PROGRAM_PARAM_NAMES:
+            if param_name in params:
+                return command, param_name
+        return None
+
+    @classmethod
+    def supports_appliance(cls, appliance) -> bool:
+        """True if this fridge exposes the commands AND has nothing better (#93).
+
+        The first two conditions are unchanged: a populated ``startProgram.program`` enum
+        to draw the options from, and a ``stopProgram`` so the ``off`` reset is real.
+
+        The third is new and is the reason this class is no longer the fridge's default
+        control. A single mutually-exclusive select is a faithful model only where the
+        appliance really has one mode at a time, and issue #93 established that it does
+        not: `stopProgram` declares four INDEPENDENT flags, `startProgram(zero_fresh)`
+        writes `tempSelZ3` without clearing `quickModeZ1`, and the app's own screen is
+        built per ZONE (`dataSourceForDemo`, decomp.txt:2838247-2838365) with two mode
+        drawers and a My Zone card, never one program list. Where we can build those
+        per-mode controls, keeping this one alongside them is not redundancy, it is a
+        second control over the same registers with a different model of them: one
+        winner at a time, where the appliance has four independent booleans.
+
+        Its ``off`` used to make that worse by sending the four-flag reset the official
+        app never sends (the app sends `stopProgram` with the single flag to clear --
+        apk/dump/ref_10136/attributes.json, commandHistory, `deviceModel: "BVL"`), so it
+        cleared three modes to turn one off. It now writes only the flags of the
+        programs it offers, which is why the residual case below is survivable at all.
+
+        Evaluated from THIS appliance's live schema, never from a model or series list,
+        and through `ref_programs.has_replacement_controls` so the entity that steps
+        aside and the entities that replace it are answering one question once. A fridge
+        whose enum carries only `iot_*` download presets has no replacement -- those
+        become fire-and-forget buttons with no state and no stop -- so it keeps this
+        select exactly as it is today, and the buttons coexist with it by design.
+
+        Consequence, stated because it is not small: on all three fridges we hold dumps
+        for the answer is now False, so this select is removed from every user we know
+        of. `docs/appliance-support.md` and the release notes have to say so.
+        """
+        commands = getattr(appliance, "commands", None)
+        commands = commands if isinstance(commands, dict) else {}
+        if "stopProgram" not in commands:
+            _LOGGER.debug(
+                "Select debug: REF select skipped, no stopProgram. commands=%s",
+                _command_names(appliance),
+            )
+            return False
+        resolved = cls._start_program_param(appliance)
+        if resolved is None:
+            _LOGGER.debug(
+                "Select debug: REF select skipped, startProgram has no program param. "
+                "commands=%s",
+                _command_names(appliance),
+            )
+            return False
+        command, param_name = resolved
+        if not HonProgramSelect._program_values(command, param_name):
+            return False
+        if has_replacement_controls(appliance):
+            _LOGGER.debug(
+                "Select debug: REF program select superseded on this appliance by the "
+                "per-mode controls it would duplicate (see ref_programs)",
+            )
+            return False
+        return True
+
+    # Shadow attributes carrying the ACTIVE program identity (cloud-persisted: what the
+    # official app reads to show the running program, e.g. after an app reinstall),
+    # matched double-gated against the offered codes. NOT startProgram.program (only the
+    # recovered default category).
+    #
+    # There is no per-zone mode field to read here. `modeZ1`/`modeZ2` used to be
+    # synthesised by the engine from the boost flags and were excluded from this list for
+    # being strictly dead; issue #93 established that Haier has no such parameter either
+    # (zero occurrences in the decompiled app, none in REF_PARAMS_ENUM) and the derivation
+    # was removed. The FLAG path above already resolves everything they could have carried.
+    #
+    # iot_* DOWNLOAD PRESETS ARE NOT SHADOW-OBSERVABLE (proven, not merely dump-blocked):
+    # an active iot_* download preset sets no flag and leaves NO program-identity field in
+    # the raw cloud shadow (no prCode/prStr/prPhase/machMode/programName; activity={}),
+    # confirmed on BOTH observed REF models (HDPW5620CNPK, HCW58F18EWMP). The official hOn
+    # app does not recover it from the shadow either: it reads no shadow identity field and
+    # runs no setpoint reverse-match, and instead shows the running preset only as a
+    # CLIENT-LOCAL "Last used" label kept in React Native AsyncStorage (@quickSet, its own
+    # last send) -- a device-local memory we cannot and should not reconstruct from the
+    # cloud. Its only shadow footprint is the tempSel setpoint triple, which is
+    # user-settable (not identity-safe) and ambiguous (preset setpoints collide); we never
+    # guess from setpoints. So "off" is the PERMANENTLY-correct current_option for download
+    # presets; programName/prStr/prCode stay only as the forward-correct handler for any
+    # future REF model that DOES expose a real program-identity key. Evidence trail:
+    # apk/analysis/deep/ref-active-program-detection.md (+ refrigeration.md section 6).
+    _REF_ACTIVE_PROGRAM_ATTRS = ("programName", "prStr", "prCode")
+
+    @property
+    def current_option(self) -> str | None:
+        # 1) Boost/special modes from the live device FLAGS (the most reliable signal,
+        #    zeroed by stopProgram). Double-gated: the code must be an offered option.
+        for flag, code in _REF_MODE_FLAG_TO_PROGRAM.items():
+            if code in self._program_codes and str(self._get_attr(flag)) == "1":
+                _LOGGER.debug(
+                    "Select debug: REF current_option id=%s flag=%s -> %s",
+                    redact_id(self._appliance_id), flag, code,
+                )
+                return code
+        # 2) Any other active program surfaced via the cloud-persisted programName/prStr/
+        #    prCode. Real device feedback, NOT optimistic "remember what was clicked"
+        #    state. (An active iot_* preset is not observable here on the current engine --
+        #    see _REF_ACTIVE_PROGRAM_ATTRS -- so it falls through to off below.)
+        matched = self._active_program_code()
+        if matched is not None:
+            return matched
+        # 3) Nothing active.
+        return REF_PROGRAM_OFF
+
+    def _active_program_code(self) -> str | None:
+        """Match the cloud's active-program field to a live option code, or None.
+
+        programName/prStr ship as i18n keys (e.g. ``PROGRAMS.REF.IOT_EXTRA_COLD``), so we
+        compare both the whole token and its last dotted segment, case-insensitively, and
+        accept ONLY an exact match against an offered code (no fuzzy/substring match, to
+        never report the wrong program). The idle sentinels ("No Program", "") are not
+        offered codes, so the double-gate rejects them. ``startProgram.program`` is
+        deliberately NOT consulted (it is the recovered default category, not the running
+        program)."""
+        by_lower = {code.lower(): code for code in self._program_codes}
+        for attr in self._REF_ACTIVE_PROGRAM_ATTRS:
+            raw = self._get_attr(attr)
+            if raw is None:
+                continue
+            token = str(raw).strip().lower()
+            if not token:
+                continue
+            for candidate in (token, token.rsplit(".", 1)[-1]):
+                code = by_lower.get(candidate)
+                if code is not None:
+                    _LOGGER.debug(
+                        "Select debug: REF current_option id=%s programName=%r -> %s",
+                        redact_id(self._appliance_id), raw, code,
+                    )
+                    return code
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="program_not_found",
+                translation_placeholders={"program": option},
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        try:
+            if option == REF_PROGRAM_OFF:
+                # Clear ONLY the flags this select can set.
+                #
+                # The bare `async_send_command(stopProgram, {})` this used to be goes
+                # through the FULL-command sender, which serialises every parameter the
+                # command declares -- on this family all four mode flags, at their
+                # default "0". That is the four-flag reset, and it is the same defect
+                # `switch.py`'s mode table was written to fix from the other side: the
+                # official app never sends it. Its own `commandHistory`
+                # (apk/dump/ref_10136/attributes.json, `deviceModel: "BVL"`) carries
+                # `{"commandName": "stopProgram", "parameters": {"intelligenceMode":
+                # "0"}}` -- one parameter, the mode being switched off.
+                #
+                # It stopped being merely unfaithful when this select started surviving
+                # alongside the per-mode switches (the residual case above). Two controls
+                # then share `stopProgram`, and stopping a residual program would switch
+                # off Super Cool, Auto-set and Holiday on the way past -- modes this
+                # select does not offer, does not display, and whose switches the user
+                # had set deliberately.
+                #
+                # A sparse patch carries the requested keys plus whatever the schema
+                # marks mandatory, so an `off` that owns no flag at all -- a select left
+                # with residual programs the shadow reports through `programName` rather
+                # than through a register -- still sends a real `stopProgram`, just
+                # without claiming any flag it has no business writing.
+                stop = get_command(appliance, STOPPROGRAM)
+                stop_params = (
+                    getattr(stop, "parameters", None) if stop is not None else None
+                )
+                stop_params = stop_params if isinstance(stop_params, dict) else {}
+                owned = {
+                    flag: "0"
+                    for flag, code in _REF_MODE_FLAG_TO_PROGRAM.items()
+                    if code in self._program_codes and flag in stop_params
+                }
+                _LOGGER.info(
+                    "Select: REF program off -> stopProgram flags=%s id=%s",
+                    sorted(owned),
+                    redact_id(self._appliance_id),
+                )
+                await async_dispatch_patch(
+                    self.hass,
+                    client,
+                    appliance,
+                    CommandPatch(STOPPROGRAM, owned, action="ref_program_off"),
+                )
+            else:
+                _LOGGER.info(
+                    "Select: REF program '%s' -> startProgram id=%s",
+                    option, redact_id(self._appliance_id),
+                )
+                await async_send_program(self.hass, client, appliance, option)
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error("Select: REF program '%s' error: %s", option, err, exc_info=True)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        await self._async_request_command_refresh()
+
+
+class HonRefMyZoneSelect(HonBaseEntity, SelectEntity):
+    """The vtRoom1 (My Zone) drawer's mode, writable (#93).
+
+    `tempSelZ3` is not a temperature on these models, it is the drawer's MODE register.
+    For the `myZone` role -- the default for slot 1 when the model declares no `vtRoom1`
+    attribute -- the app builds a MODE_SELECTION card over it and never a temperature one
+    (`getVtRoomSource`, decomp.txt:2839249-2839271); a spinner exists only behind a
+    remote flag, on Casarte Invista, and on the single-compartment uprights where Z3 is
+    the only setpoint there is. 5.20.0 published that reading as `sensor.my_zone_mode`.
+    This is the same value made writable, and the write is the one the app uses: the
+    drawer's programs ARE the write channel, because on the reporter's HFW7720EWMP
+    `tempSelZ3` is not in `settings` at all.
+
+    THERE IS NO `off`, AND THAT IS THE DEVICE, NOT A SIMPLIFICATION. `stopProgram`
+    declares `holidayMode`, `intelligenceMode`, `quickModeZ1` and `quickModeZ2` and does
+    not touch `tempSelZ3`, so nothing can put the drawer into "no mode": it is always at
+    one of its own values, and the reporter's has been sitting on Zero Fresh, untouched,
+    since 2024. An option is something the user can SELECT, and there is no command that
+    would carry this one.
+
+    `current_option` is None -- HA shows unknown -- for a register value no drawer
+    program explains. The case that matters is 17: HOLIDAY's `programRules` force
+    `tempSelZ3 -> "17"`, which is outside the drawer's own vocabulary, and while Holiday
+    runs the drawer is in none of its modes. The app shows NO_MODE_SELECTED there
+    (decomp.txt:2841604) and `sensor.my_zone_mode` shows unknown, so all three agree.
+    Deliberately NOT done: no synthetic `holiday` or `unknown` option to render it, for
+    the same reason there is no `off` -- it would be an option nobody can pick, and
+    `binary_sensor.holiday_mode` already says Holiday is running.
+
+    Also deliberately NOT done: no fallback to the static value table
+    (`sensor.MY_ZONE_MODE_MAP`, which names 2 `chiller`, 3 `cool_drink`, 4 `cheese`). A
+    select may report only its own options, and those three labels are the app's second
+    answer for numbers no program explains -- i.e. exactly the numbers this select could
+    not send. Reporting one would show a state the control cannot reach.
+
+    The condition that would change any of this: a REF whose `stopProgram` declares
+    `tempSelZ3`, or whose catalogue carries a drawer program that clears the register.
+    Then the drawer would have an off, and this class would need one.
+    """
+
+    _attr_icon = "mdi:food-apple-outline"
+    _attr_translation_key = "my_zone_mode"
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        codes: list[str],
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._attr_unique_id = f"{appliance_id}_my_zone_mode"
+        # Frozen at construction from the LIVE catalogue, in the drawer's own
+        # coldest-first order (see ref_programs.my_zone_codes). A later shadow value
+        # outside this set must never add or drop a mode: in HA the options ARE part of
+        # the state, and an automation calling select.select_option has to keep working
+        # across a refresh.
+        self._attr_options = list(codes)
+        _LOGGER.debug(
+            "Select debug: init REF My Zone select '%s' id=%s options=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            self._attr_options,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        """The drawer's mode, resolved the way the app resolves it.
+
+        `getMyZoneMappedMode` does not start from the value: it asks
+        `getModeNameFromCommands` which startProgram category pins `tempSelZ3` to exactly
+        this number and answers with that category's name
+        (decomp.txt:2834689-2834780). So does this, through the SAME
+        `program_code_for_fixed_value` the 5.20.0 sensor uses -- narrowed to the drawer's
+        own programs, because on a fridge whose download presets also pin the register
+        the unrestricted lookup names one of them (see
+        `ref_programs.my_zone_code_for_value`).
+
+        The offered-options gate is kept even though the lookup is already narrowed to
+        the same list: `_attr_options` is frozen at construction while the catalogue is
+        read live, so a category the cloud adds between two polls must fall through to
+        unknown rather than push this entity into a state it never offered.
+        """
+        appliance = self._appliance
+        if appliance is None:
+            return None
+        code = my_zone_code_for_value(
+            appliance, self._get_attr(REF_MY_ZONE_PARAM)
+        )
+        if code is not None and code in (self._attr_options or ()):
+            return code
+        _LOGGER.debug(
+            "Select debug: My Zone id=%s %s=%r explained by no offered drawer "
+            "program -> unknown (17 is Holiday's rule, not a mode)",
+            redact_id(self._appliance_id),
+            REF_MY_ZONE_PARAM,
+            self._get_attr(REF_MY_ZONE_PARAM),
+        )
+        return None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in (self._attr_options or ()):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="program_not_found",
+                translation_placeholders={"program": option},
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        try:
+            _LOGGER.info(
+                "Select: REF My Zone '%s' -> startProgram id=%s",
+                option,
+                redact_id(self._appliance_id),
+            )
+            # `async_send_program` and not a `CommandPatch`: the write is a category
+            # SWAP, and the category's own fixed `tempSelZ3` is what travels. Building a
+            # patch would need the `program` selector key in `requested_order`, which
+            # would put it on the wire -- and the app's own body never carries it
+            # (apk/analysis/issue93-ref-controls-shape.md, "ON"). This is also the exact
+            # call the reporter's appliance has already accepted and executed:
+            # commandHistory, 2026-08-20, `deviceModel: "addhon"`, `timestampExecuted`
+            # present.
+            await async_send_program(self.hass, client, appliance, option)
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "Select: REF My Zone '%s' error: %s", option, err, exc_info=True
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        await self._async_request_command_refresh()
+
+
+class HonAcDirectionSelect(HonBaseEntity, SelectEntity):
+    """Manual fan-direction (louver position) select for air conditioners (#37).
+
+    One entity per axis (vertical / horizontal). Options come from the device's LIVE
+    per-model settings enum (windDirectionVertical / windDirectionHorizontal), never
+    hard-coded, mapped to stable bilingual option keys. Selecting sends IMMEDIATELY
+    through ac_command.async_send_settings -- the SAME sanitizer-guarded path the
+    climate swing uses -- so a requested position survives the windDirection sanitizer
+    (it is applied AFTER the pre_send hook and therefore wins). current_option maps the
+    live reading to an offered key and returns None when the firmware reports a value
+    outside the offered enum (e.g. 0 when off, or a value the setter enum excludes): HA
+    shows unknown, never a false map, never a raise. Coexists by design with the climate
+    swing_mode (on/off) entity: both it and this vertical select write
+    windDirectionVertical (value 8 = swing).
+    """
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        description: HonAcDirectionSelectDescription,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._desc = description
+        self._attr_translation_key = description.translation_key
+        self._attr_unique_id = f"{appliance_id}_{description.key}"
+        self._attr_icon = description.icon
+        label_map = description.label_map
+        param = settings_param(self._appliance, description.param)
+        # Offer the LIVE per-model enum values, mapped to stable option keys (raw number
+        # as a forward-safe fallback for an unmapped value); order follows the device
+        # enum. Each raw value is NORMALIZED to its canonical code (normalize_code:
+        # "5.0"/"5,0" -> "5") BEFORE it becomes a map key, so the stored key, the label
+        # lookup and the value we send share the SAME canonical form current_option()
+        # looks up with -- otherwise an enum advertised non-canonically (e.g. "13.0")
+        # would build a key the normalized read-back never matches and would surface as
+        # unknown. For the real per-model enums (clean small integers) this is a no-op.
+        # param_allowed_values([]/None) yields [] (gated-out params never reach here).
+        # Mirrors HonProgramOptionSelect / option_value_set, which already normalize.
+        base_keys: dict[str, str] = {}
+        for raw in param_allowed_values(param):
+            code = normalize_code(raw)
+            if code is None:
+                continue
+            base_keys[code] = label_map.get(code, code)
+        # Collision-aware disambiguation (mirrors HonProgramOptionSelect): if two codes
+        # share a label, suffix the colliding ones so every code stays selectable and
+        # _key_to_raw never drops one. The current FAN_DIR maps are injective (numeric
+        # fallbacks), so this is a no-op today; it removes the latent duplicate-option /
+        # lossy-reverse trap if a map ever gains a shared label. See disambiguate_labels.
+        self._raw_to_key: dict[str, str] = disambiguate_labels(base_keys)
+        self._key_to_raw: dict[str, str] = {
+            key: raw for raw, key in self._raw_to_key.items()
+        }
+        self._attr_options = list(self._raw_to_key.values())
+        _LOGGER.debug(
+            "Select debug: init AC direction select '%s' id=%s param=%s options=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            description.param,
+            self._attr_options,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        # Map the LIVE windDirection value to an offered key. Out-of-enum reads (0 when
+        # off, or e.g. horizontal 2 outside the setter enum) -> None: never raise, never
+        # false-map.
+        raw = self._get_attr(self._desc.attr)
+        if raw is None:
+            return None
+        return self._raw_to_key.get(normalize_code(raw))
+
+    async def async_select_option(self, option: str) -> None:
+        raw = self._key_to_raw.get(option)
+        if raw is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": option,
+                    "allowed": ", ".join(self._attr_options),
+                },
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        try:
+            _LOGGER.info(
+                "Select: AC %s -> %s=%s id=%s",
+                self._desc.key,
+                self._desc.param,
+                raw,
+                redact_id(self._appliance_id),
+            )
+            await async_send_settings(self.hass, client, appliance, {self._desc.param: raw})
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "Select: AC %s set error %s=%s: %s",
+                self._desc.key, self._desc.param, raw, err, exc_info=True,
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+
+class HonHobPowerLimitSelect(HonBaseEntity, SelectEntity):
+    """The intake LIMIT of an induction hob, in kW (#84.1).
+
+    A select and not a number, following the same reasoning that turned the air
+    purifier's panel light into one: the parameter declares a handful of named
+    positions with known labels, and a slider would invite values between them
+    that the device does not honour. Here the labels are the whole point -- a bare
+    "3" says nothing, "4.5 kW" is the number on the user's meter.
+
+    NEVER called "power". `powerManagement` caps what the whole hob may draw; it is
+    not the power of a zone, and `model_attributes.power` is a third quantity again
+    (the panel steps of one zone). Lowering the limit while cooking reduces what
+    the zones can draw, so the label has to say limit or the control lies.
+
+    NOT gated on `remoteCtrValid`. The reporting hob has it at 0 and its writes may
+    well be refused, but this integration's policy is to let a refusal surface as
+    the dispatcher's localized `command_rejected` rather than to hide a control on
+    a flag no other writable entity consults. Changing that is a decision for every
+    writable entity at once, not for this one.
+    """
+
+    _attr_translation_key = "power_limit"
+    _attr_icon = "mdi:speedometer-slow"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        levels: dict[str, str],
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        # Device order, not sorted: the schema lists the levels from no limit
+        # upwards, which is the order the app shows and the order a user expects.
+        self._raw_to_key = dict(levels)
+        self._key_to_raw = {key: raw for raw, key in self._raw_to_key.items()}
+        self._attr_options = list(self._raw_to_key.values())
+        self._attr_unique_id = f"{appliance_id}_power_limit"
+        _LOGGER.debug(
+            "Select debug: init hob power-limit select id=%s options=%s",
+            redact_id(appliance_id),
+            self._attr_options,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        """The live level, or None when it is one this hob's scale does not name.
+
+        Never a false map and never a raise: a firmware reporting a level outside
+        the ones it declares reads as unknown, exactly like the AC direction
+        selects do with an out-of-enum louvre position.
+        """
+        raw = self._get_attr(HOB_POWER_LIMIT_PARAM)
+        if raw is None:
+            return None
+        return self._raw_to_key.get(normalize_code(raw))
+
+    async def async_select_option(self, option: str) -> None:
+        raw = self._key_to_raw.get(option)
+        if raw is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": option,
+                    "allowed": ", ".join(self._attr_options),
+                },
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        try:
+            _LOGGER.info(
+                "Select: hob power limit -> %s=%s id=%s",
+                HOB_POWER_LIMIT_PARAM,
+                raw,
+                redact_id(self._appliance_id),
+            )
+            # The settings command, with the ONE parameter this write is about.
+            # `category` is never named: it is a dispatcher selector key, and
+            # asking for it by name would make the engine swap the active command
+            # category permanently. See hood.py for the full argument.
+            await async_send_command(
+                self.hass,
+                client,
+                appliance,
+                HOB_SETTINGS_COMMAND,
+                {HOB_POWER_LIMIT_PARAM: raw},
+            )
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "Select: hob power limit set error %s=%s: %s",
+                HOB_POWER_LIMIT_PARAM,
+                raw,
+                err,
+                exc_info=True,
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+
+class HonAirPurifierAromaSelect(HonBaseEntity, SelectEntity):
+    """Air purifier aroma mode.
+
+    Options are the canonical names intersected with the device's LIVE
+    `aromaStatus` enum, with Custom withheld unless both timing parameters are
+    writable too (its contract cannot be completed without them).
+
+    Unavailable while the purifier is stopped: the observed application sends
+    aroma patches only during an active session, and selecting a mode must never
+    implicitly start the appliance. Every write is a sparse settings patch through
+    the transactional dispatcher.
+    """
+
+    _attr_translation_key = "aroma"
+    _attr_icon = "mdi:air-purifier"
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        capabilities: AirPurifierCapabilities,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._capabilities = capabilities
+        self._attr_unique_id = f"{appliance_id}_aroma"
+        self._attr_options = list(capabilities.aroma_options)
+        _LOGGER.debug(
+            "Select debug: init AP aroma select id=%s options=%s",
+            redact_id(appliance_id),
+            self._attr_options,
+        )
+
+    @property
+    def available(self) -> bool:
+        return super().available and environment_available(self._attributes)
+
+    @property
+    def current_option(self) -> str | None:
+        """The live mode, or None when it is not one of the OFFERED options.
+
+        A value the user could not have chosen (undeclared, or Custom on a device
+        whose timings are missing) reads as unknown rather than being mapped to an
+        option that is not in the list.
+        """
+        raw = self._get_attr(_AROMA_ATTR)
+        if raw is None:
+            return None
+        option = AP_AROMA_TO_OPTION.get(raw_text(raw))
+        return option if option in self._attr_options else None
+
+    def _custom_time(self, param: str) -> str:
+        """The value to send for one custom timing field.
+
+        The live shadow reading wins; the command's own value stands in when the
+        shadow is missing or reports something outside the declared range, so a
+        stale or sentinel reading is never echoed back to the device. Both
+        candidates are validated against the LIVE range parameter.
+        """
+        settings_name = self._capabilities.settings_command
+        parameter = command_param(self._appliance, settings_name, param)
+        bounds = param_range(parameter)
+        if bounds is None:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": f"{param} is not writable"},
+            )
+        low, high, _step = bounds
+        for candidate in (self._get_attr(param), getattr(parameter, "value", None)):
+            if candidate is None or candidate == "":
+                continue
+            try:
+                number = float(candidate)
+            except (TypeError, ValueError):
+                continue
+            if low <= number <= high:
+                return str(int(number)) if number.is_integer() else str(number)
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="command_error",
+            translation_placeholders={"error": f"no valid {param} in [{low}, {high}]"},
+        )
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": option,
+                    "allowed": ", ".join(self._attr_options),
+                },
+            )
+        if not environment_available(self._attributes):
+            # `available` already hides this entity while the purifier is stopped, but
+            # a hidden entity is not an unreachable one: a script keeps calling the
+            # service, and the snapshot `available` reads can be a refresh behind the
+            # device. Refusing here is what actually holds the rule the class
+            # docstring states, that selecting a mode never implicitly starts the
+            # appliance.
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="purifier_not_running",
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        raw = AP_OPTION_TO_AROMA[option]
+        values: dict[str, object] = {"value": raw}
+        if raw == AP_CUSTOM_AROMA:
+            values["time_on"] = self._custom_time(_AROMA_TIME_ON_ATTR)
+            values["time_off"] = self._custom_time(_AROMA_TIME_OFF_ATTR)
+        try:
+            patch = ap_patch("set_aroma", self._capabilities, **values)
+            _LOGGER.info(
+                "Select: AP aroma -> %s id=%s",
+                option,
+                redact_id(self._appliance_id),
+            )
+            await async_dispatch_patch(self.hass, client, appliance, patch)
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error("AP aroma select: %s failed: %s", option, err, exc_info=True)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+
+class HonAirPurifierPanelLightSelect(HonBaseEntity, SelectEntity):
+    """Air purifier panel light: three named positions, not a brightness scale.
+
+    The device declares `lightStatus` over exactly three steps and honours nothing
+    between them. Exposed as a light entity, Home Assistant's continuous 0-255
+    brightness had to be quantized on every write, so two thirds of the slider
+    silently snapped elsewhere and the dark position had to masquerade as the
+    entity being "off". A select says what the device actually does.
+
+    NOT gated on power, like the lock and tone toggles: the panel level is a
+    setting the purifier keeps while stopped, not live telemetry. Every write is a
+    sparse settings patch through the transactional dispatcher, so it carries
+    `lightStatus` alone and cannot disturb the mode, aroma or lock.
+    """
+
+    _attr_translation_key = "panel_light"
+    _attr_icon = "mdi:television-ambient-light"
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        capabilities: AirPurifierCapabilities,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self._capabilities = capabilities
+        self._attr_unique_id = f"{appliance_id}_panel_light"
+        # Fixed at construction from the LIVE schema, in the canonical order. A
+        # later shadow value outside this set must never add or drop a position.
+        self._attr_options = [
+            option
+            for option in AP_LIGHT_OPTION_ORDER
+            if AP_OPTION_TO_LIGHT[option] in capabilities.light_values
+        ]
+        _LOGGER.debug(
+            "Select debug: init AP panel light id=%s options=%s",
+            redact_id(appliance_id),
+            self._attr_options,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        """The live position, or None for a raw value that is not one offered.
+
+        An undeclared reading reads as unknown rather than being folded onto a
+        neighbouring position, which would show the user a level the panel is not
+        at.
+        """
+        raw = self._get_attr(_LIGHT_ATTR)
+        if raw is None:
+            return None
+        option = AP_LIGHT_TO_OPTION.get(raw_text(raw))
+        return option if option in self._attr_options else None
+
+    async def async_select_option(self, option: str) -> None:
+        if option not in self._attr_options:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": option,
+                    "allowed": ", ".join(self._attr_options),
+                },
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        raw = AP_OPTION_TO_LIGHT[option]
+        try:
+            # Built INSIDE the try so a value the live schema rejects surfaces as
+            # the same localized command error as a transport failure.
+            patch = ap_patch("set_light", self._capabilities, value=raw)
+            _LOGGER.info(
+                "Select: AP panel light -> %s id=%s",
+                option,
+                redact_id(self._appliance_id),
+            )
+            await async_dispatch_patch(self.hass, client, appliance, patch)
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "AP panel light select: %s failed: %s", option, err, exc_info=True
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err

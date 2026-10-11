@@ -1,0 +1,257 @@
+automation:
+  - id: boiler_automation_master_switch
+    alias: Boiler automation master switch
+    mode: restart
+
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.boiler_automation_enabled
+        to: "off"
+        id: disabled
+
+      - trigger: state
+        entity_id: input_boolean.boiler_automation_enabled
+        to: "on"
+        id: enabled
+
+    actions:
+      - choose:
+          # ==================================================
+          # AUTOMATIC CONTROL DISABLED
+          # ==================================================
+          - conditions:
+              - condition: trigger
+                id: disabled
+
+            sequence:
+              - variables:
+                  had_active_cycle: >
+                    {{
+                      is_state(
+                        'input_boolean.boiler_cycle_active',
+                        'on'
+                      )
+                    }}
+
+                  runtime_formatted: >
+                    {% set started =
+                      state_attr(
+                        'input_datetime.boiler_started_at',
+                        'timestamp'
+                      )
+                    %}
+
+                    {% if
+                      is_state(
+                        'input_boolean.boiler_cycle_active',
+                        'on'
+                      )
+                      and started is number
+                    %}
+                      {% set total =
+                        ((as_timestamp(now()) - started) / 60) | int
+                      %}
+                      {% set hours = total // 60 %}
+                      {% set minutes = total % 60 %}
+
+                      {{ hours }} h {{ '%02d' | format(minutes) }} min
+                    {% else %}
+                      0 h 00 min
+                    {% endif %}
+
+                  previous_start_reason: >
+                    {{ states('input_text.boiler_start_reason') }}
+
+                  previous_trvs: >
+                    {{ states('input_text.boiler_cycle_trvs') }}
+
+              - action: timer.cancel
+                target:
+                  entity_id: timer.boiler_single_trv_delay
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_waiting_trv
+                data:
+                  value: ""
+
+              # Important:
+              # prevent the automatic OFF below from being detected
+              # as the end of a manual session.
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.boiler_manual_session_active
+
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.boiler_cycle_active
+
+              # Disabling automatic control always leaves boiler OFF.
+              - if:
+                  - condition: state
+                    entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+                    state: "on"
+                then:
+                  - action: switch.turn_off
+                    target:
+                      entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ had_active_cycle }}"
+
+                    sequence:
+                      - action: logbook.log
+                        data:
+                          name: Boiler Ariston
+                          entity_id: input_text.boiler_history
+                          message: >-
+                            AUTOMATIC CONTROL DISABLED
+                            · Boiler stopped
+                            · Runtime {{ runtime_formatted }}
+                            · {{ previous_start_reason }}
+                            · TRVs involved: {{ previous_trvs }}
+
+                default:
+                  - action: logbook.log
+                    data:
+                      name: Boiler Ariston
+                      entity_id: input_text.boiler_history
+                      message: >-
+                        AUTOMATIC CONTROL DISABLED
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_cycle_trvs
+                data:
+                  value: ""
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_start_reason
+                data:
+                  value: ""
+
+          # ==================================================
+          # AUTOMATIC CONTROL ENABLED
+          # ==================================================
+          - conditions:
+              - condition: trigger
+                id: enabled
+
+            sequence:
+              # Capture a manually running cycle before switching
+              # the boiler OFF and giving control back to automation.
+              - variables:
+                  had_manual_session: >
+                    {{
+                      is_state(
+                        'input_boolean.boiler_manual_session_active',
+                        'on'
+                      )
+                      and is_state(
+                        'switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch',
+                        'on'
+                      )
+                    }}
+
+                  manual_runtime: >
+                    {% set started =
+                      state_attr(
+                        'input_datetime.boiler_manual_started_at',
+                        'timestamp'
+                      )
+                    %}
+
+                    {% if
+                      is_state(
+                        'input_boolean.boiler_manual_session_active',
+                        'on'
+                      )
+                      and started is number
+                    %}
+                      {% set total =
+                        ((as_timestamp(now()) - started) / 60) | int
+                      %}
+                      {% set hours = total // 60 %}
+                      {% set minutes = total % 60 %}
+
+                      {{ hours }} h {{ '%02d' | format(minutes) }} min
+                    {% else %}
+                      0 h 00 min
+                    {% endif %}
+
+              # End manual session BEFORE switch.turn_off.
+              # This prevents a duplicate MANUAL OFF history record.
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.boiler_manual_session_active
+
+              - if:
+                  - condition: state
+                    entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+                    state: "on"
+                then:
+                  - action: switch.turn_off
+                    target:
+                      entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+
+                  - wait_template: >
+                      {{
+                        is_state(
+                          'switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch',
+                          'off'
+                        )
+                      }}
+                    timeout: "00:00:05"
+                    continue_on_timeout: true
+
+              - if:
+                  - condition: template
+                    value_template: "{{ had_manual_session }}"
+                then:
+                  - action: logbook.log
+                    data:
+                      name: Boiler Ariston
+                      entity_id: input_text.boiler_history
+                      message: >-
+                        MANUAL OFF
+                        · Runtime {{ manual_runtime }}
+                        · Automatic control enabled
+
+              - action: timer.cancel
+                target:
+                  entity_id: timer.boiler_single_trv_delay
+
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.boiler_cycle_active
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_waiting_trv
+                data:
+                  value: ""
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_cycle_trvs
+                data:
+                  value: ""
+
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.boiler_start_reason
+                data:
+                  value: ""
+
+              - action: logbook.log
+                data:
+                  name: Boiler Ariston
+                  entity_id: input_text.boiler_history
+                  message: >-
+                    AUTOMATIC CONTROL ENABLED
+
+              # Immediately evaluate current TRV demand.
+              - event: boiler_control_recheck

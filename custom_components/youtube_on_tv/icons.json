@@ -1,0 +1,71 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "ad_playing": {
+        "default": "mdi:advertisements-off",
+        "state": {
+          "on": "mdi:advertisements"
+        }
+      },
+      "session": {
+        "default": "mdi:lan-disconnect",
+        "state": {
+          "on": "mdi:lan-connect"
+        }
+      }
+    },
+    "button": {
+      "skip_ad": {
+        "default": "mdi:skip-next"
+      }
+    },
+    "sensor": {
+      "app_state": {
+        "default": "mdi:application",
+        "state": {
+          "running": "mdi:play-box",
+          "stopped": "mdi:stop-circle-outline",
+          "hidden": "mdi:application-outline",
+          "unreachable": "mdi:television-off"
+        }
+      },
+      "up_next": {
+        "default": "mdi:playlist-play"
+      },
+      "subtitles": {
+        "default": "mdi:subtitles",
+        "state": {
+          "off": "mdi:subtitles-outline"
+        }
+      },
+      "video_quality": {
+        "default": "mdi:high-definition"
+      }
+    },
+    "switch": {
+      "autoplay": {
+        "default": "mdi:autorenew",
+        "state": {
+          "off": "mdi:autorenew-off"
+        }
+      },
+      "subtitles": {
+        "default": "mdi:subtitles",
+        "state": {
+          "off": "mdi:subtitles-outline"
+        }
+      },
+      "session": {
+        "default": "mdi:cast-connected",
+        "state": {
+          "off": "mdi:cast-off"
+        }
+      }
+    },
+    "select": {
+      "playback_speed": {
+        "default": "mdi:play-speed"
+      }
+    }
+  }
+}

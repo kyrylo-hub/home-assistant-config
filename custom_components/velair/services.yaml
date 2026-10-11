@@ -1,0 +1,535 @@
+set_temperature:
+  name: Set temperature
+  description: Set a single target or a lower and upper target range for one climate entity through Home Assistant.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    temperature:
+      name: Target temperature
+      description: Single target temperature. Leave empty when using a lower and upper target range.
+      required: false
+      example: 21
+      selector:
+        number:
+          mode: box
+    target_temp_low:
+      name: Lower target temperature
+      description: Lower target for a temperature range. Use together with the upper target and leave the single target empty.
+      required: false
+      example: 20
+      selector:
+        number:
+          mode: box
+    target_temp_high:
+      name: Upper target temperature
+      description: Upper target for a temperature range. Use together with the lower target and leave the single target empty.
+      required: false
+      example: 24
+      selector:
+        number:
+          mode: box
+    hvac_mode:
+      name: HVAC mode
+      description: Optional mode to apply before setting the temperature. If omitted, the current mode is kept when the climate entity is already on.
+      required: false
+      example: heat
+      selector:
+        select:
+          options:
+            - heat
+            - cool
+            - heat_cool
+            - auto
+            - dry
+            - fan_only
+    fan_mode:
+      name: Fan mode
+      description: Optional fan mode to apply when the climate entity supports it.
+      required: false
+      example: low
+      selector:
+        text:
+    preset_mode:
+      name: Preset mode
+      description: Optional preset to apply when the climate entity supports it.
+      required: false
+      example: sleep
+      selector:
+        text:
+    swing_mode:
+      name: Swing mode
+      description: Optional swing mode to apply when the climate entity supports it.
+      required: false
+      example: vertical
+      selector:
+        text:
+    swing_horizontal_mode:
+      name: Horizontal swing mode
+      description: Optional horizontal swing mode to apply when the climate entity supports it.
+      required: false
+      example: auto
+      selector:
+        text:
+    humidity:
+      name: Target humidity
+      description: Optional target humidity to apply when the climate entity supports it.
+      required: false
+      example: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+set_hvac_mode:
+  name: Set HVAC mode
+  description: Set a non-off HVAC mode for one locally controlled Velair climate without sending a target temperature.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    hvac_mode:
+      name: HVAC mode
+      description: Non-off mode advertised by the selected climate entity.
+      required: true
+      example: auto
+      selector:
+        select:
+          options:
+            - heat
+            - cool
+            - heat_cool
+            - auto
+            - dry
+            - fan_only
+
+apply_schedule:
+  name: Apply schedule
+  description: Apply the currently active schedule block now.
+  fields:
+    entity_id:
+      required: false
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    hvac_mode:
+      name: HVAC mode
+      description: Optional mode override used while applying the current schedule.
+      required: false
+      example: heat
+      selector:
+        select:
+          options:
+            - heat
+            - cool
+            - heat_cool
+            - auto
+            - dry
+            - fan_only
+
+activate_profile:
+  name: Activate climate profile
+  description: Replace the active set with one saved climate profile. Zones not covered by it return to their default schedules. Leave the profile ID empty to return every zone to default schedules.
+  fields:
+    profile_id:
+      name: Profile ID
+      description: Stable key of the profile to activate. Empty clears the active set and selects Default.
+      required: false
+      example: away
+      selector:
+        text:
+
+deactivate_profile:
+  name: Deactivate climate profile
+  description: Return to default schedules by deactivating all climate profiles.
+
+boost:
+  name: Boost
+  description: Temporarily override one zone with a single target or target range, then return that zone to its active schedule.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    temperature:
+      name: Target temperature
+      description: Single boost target. Leave empty when using a lower and upper target range.
+      required: false
+      example: 22
+      selector:
+        number:
+          mode: box
+    target_temp_low:
+      name: Lower target temperature
+      description: Lower boost target for a temperature range. Use together with the upper target and leave the single target empty.
+      required: false
+      example: 20
+      selector:
+        number:
+          mode: box
+    target_temp_high:
+      name: Upper target temperature
+      description: Upper boost target for a temperature range. Use together with the lower target and leave the single target empty.
+      required: false
+      example: 24
+      selector:
+        number:
+          mode: box
+    duration_minutes:
+      required: true
+      example: 45
+      selector:
+        number:
+          min: 1
+          max: 10080
+          step: 5
+          unit_of_measurement: min
+    hvac_mode:
+      name: HVAC mode
+      description: Optional mode to apply before boost. If omitted, the current mode is kept when the climate entity is already on.
+      required: false
+      example: heat
+      selector:
+        select:
+          options:
+            - heat
+            - cool
+            - heat_cool
+            - auto
+            - dry
+            - fan_only
+    fan_mode:
+      name: Fan mode
+      description: Optional fan mode to apply for the boost when supported.
+      required: false
+      example: high
+      selector:
+        text:
+    preset_mode:
+      name: Preset mode
+      description: Optional preset to apply for the boost when supported.
+      required: false
+      example: boost
+      selector:
+        text:
+    swing_mode:
+      name: Swing mode
+      description: Optional swing mode to apply for the boost when supported.
+      required: false
+      example: vertical
+      selector:
+        text:
+    swing_horizontal_mode:
+      name: Horizontal swing mode
+      description: Optional horizontal swing mode to apply for the boost when supported.
+      required: false
+      example: auto
+      selector:
+        text:
+    humidity:
+      name: Target humidity
+      description: Optional target humidity to apply for the boost when supported.
+      required: false
+      example: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+
+cancel_boost:
+  name: Cancel boost
+  description: Cancel one active boost and immediately return the climate to its current explicit schedule target or its state before the boost.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+
+pause:
+  name: Pause
+  description: Temporarily pause automatic schedule execution.
+  fields:
+    duration_minutes:
+      required: false
+      example: 60
+      selector:
+        number:
+          min: 1
+          max: 10080
+          step: 5
+          unit_of_measurement: min
+
+resume:
+  name: Resume
+  description: Resume automatic schedule execution and apply the current schedule.
+  fields: {}
+
+pause_zone:
+  name: Pause zone
+  description: Add or update a reason that pauses automatic schedule execution for one managed climate entity. The climate can optionally be turned off while any reason remains.
+  fields:
+    entity_id:
+      required: true
+      example: climate.guest_room
+      selector:
+        entity:
+          domain: climate
+    duration_minutes:
+      required: false
+      example: 120
+      selector:
+        number:
+          min: 1
+          max: 10080
+          step: 5
+          unit_of_measurement: min
+    action:
+      name: Pause action
+      description: Optional action to apply immediately when the zone is paused.
+      required: false
+      default: none
+      example: turn_off
+      selector:
+        select:
+          options:
+            - none
+            - turn_off
+    pause_id:
+      name: Pause ID
+      description: Optional stable reason identifier for an automation. Reusing it updates only that reason; omitting it replaces all reasons with one manual pause.
+      required: false
+      example: velair_window_guard
+      selector:
+        text:
+
+resume_zone:
+  name: Resume zone
+  description: Remove one identified pause reason, or remove all reasons when pause_id is omitted for legacy compatibility.
+  fields:
+    entity_id:
+      required: true
+      example: climate.guest_room
+      selector:
+        entity:
+          domain: climate
+    apply_current_schedule:
+      name: Apply current schedule
+      description: Apply the currently active schedule block for this climate after resuming, when one exists.
+      required: false
+      default: true
+      example: true
+      selector:
+        boolean:
+    pause_id:
+      name: Pause ID
+      description: Optional stable reason identifier. When provided, only that reason is removed.
+      required: false
+      example: velair_window_guard
+      selector:
+        text:
+    resume_all:
+      name: Resume all
+      description: Explicitly remove every pause reason. Cannot be combined with Pause ID; omitting both retains legacy resume-all behavior.
+      required: false
+      example: true
+      selector:
+        boolean:
+
+set_daily_schedule:
+  name: Set daily schedule
+  description: Replace one weekday schedule for one managed climate entity.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    weekday:
+      required: true
+      example: monday
+      selector:
+        select:
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    blocks:
+      required: true
+      description: List of schedule blocks. Temperature blocks need start and temperature. Mode-only blocks need action set_hvac_mode and a non-off hvac_mode. Turn-off blocks need start and action turn_off.
+      example:
+        - start: "06:00"
+          action: set_temperature
+          temperature: 21
+          hvac_mode: heat
+        - start: "09:00"
+          action: turn_off
+        - start: "12:00"
+          action: set_hvac_mode
+          hvac_mode: auto
+        - start: "15:00"
+          action: set_temperature
+          temperature: 18
+        - start: "18:00"
+          action: set_temperature
+          temperature: 24
+          hvac_mode: cool
+          fan_mode: low
+          preset_mode: sleep
+          swing_mode: off
+      selector:
+        object:
+
+copy_day_schedule:
+  name: Copy day schedule
+  description: Copy one weekday schedule to one or more target weekdays for one managed climate entity.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    source_weekday:
+      required: true
+      example: monday
+      selector:
+        select:
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    target_weekdays:
+      required: true
+      example:
+        - tuesday
+        - wednesday
+        - thursday
+      selector:
+        select:
+          multiple: true
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+
+clear_schedule:
+  name: Clear schedule
+  description: Clear one weekday schedule, or all weekdays if weekday is omitted, for one managed climate entity.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+    weekday:
+      required: false
+      example: sunday
+      selector:
+        select:
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+
+enable_room_sensor_assist:
+  name: Enable Room Sensor Assist
+  description: Enable Room Sensor Assist for one managed climate entity that already has a room temperature sensor configured.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+
+disable_room_sensor_assist:
+  name: Disable Room Sensor Assist
+  description: Disable Room Sensor Assist for one managed climate entity and restore its current scheduled target when needed.
+  fields:
+    entity_id:
+      required: true
+      example: climate.living_room
+      selector:
+        entity:
+          domain: climate
+
+set_external_change_policy:
+  name: Set external change policy
+  description: Choose whether Velair reapplies its current authority or starts Manual control when a managed climate changes outside Velair.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: climate
+    policy:
+      required: true
+      selector:
+        select:
+          options:
+            - keep_automatic
+            - until_next_block
+            - for_duration
+            - until_resumed
+    duration_minutes:
+      required: false
+      example: 60
+      selector:
+        number:
+          min: 1
+          max: 10080
+          step: 5
+          unit_of_measurement: min
+
+resume_automatic_control:
+  name: Resume automatic control
+  description: Leave Manual adjustment, resolve the current Velair intent, and deliver it only when scheduler state and other overrides allow.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: climate
+
+enter_manual_adjustment:
+  name: Enter Manual adjustment
+  description: Enter Manual adjustment with the climate's live HVAC mode and setpoint. It uses the saved external-adjustment policy; when Keep automatic is saved, the explicit hold lasts until automatic control is resumed.
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          domain: climate

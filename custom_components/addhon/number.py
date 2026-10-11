@@ -1,0 +1,1069 @@
+# Copyright (C) 2026 tis24dev
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""Haier hOn numbers (Tier 3): writable temperature setpoints.
+
+Cross-reference between the runtime schema (ground truth: dump of the real
+fridge REF HDPW5620CNPK -> `settings`/`setParameters` with tempSelZ1[2..8],
+tempSelZ2[-24..-16], tempSelZ3[0..5]) and the mapping of the decompiled app (S7,
+superset: tempSelZ1..Z4, tempSelUZ/LZ, generic tempSel).
+
+Each number is CAPABILITY-GATED: it is created only if the device exposes the
+parameter in a write command (`settings`/`setParameters`), and min/max/step are
+read from the REAL parameter at runtime (not hardcoded), so it is correct for
+every model. The write goes through the generic sender
+(hon_commands.async_send_command), the same mechanism as the AC `settings`
+command.
+
+unique_id CONSTRAINT: the `key` of each description is the SUFFIX of unique_id;
+distinct from the Tier 2 sensors (e.g. number `target_temp_zone1` vs sensor
+`temp_zone1`), so no collision.
+
+CAVEAT: the mapped types are not live-validated on a powered-on device (the test
+fridge is offline). The SCHEMA is validated from the dump; the live write is
+queued on the cloud until the device comes online.
+
+MIXED FILE: the air purifier's custom aroma timings also live here, and they do
+NOT use the generic sender. They are sparse patches through the transactional
+dispatcher, are built outside the NUMBERS table, and exist only while the
+experimental option is on.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import logging
+import math
+
+from homeassistant.components.number import (
+    NumberDeviceClass,
+    NumberEntity,
+    NumberEntityDescription,
+    NumberMode,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .air_purifier import (
+    AP_CUSTOM_AROMA,
+    AirPurifierCapabilities,
+    ap_patch,
+    discover_capabilities,
+    environment_available,
+    raw_text,
+    reports_attribute,
+)
+from .base_entity import HonBaseEntity
+from .command_dispatch import CommandPatch, async_dispatch_patch
+from .const import (
+    APPLIANCE_AP,
+    APPLIANCE_FR,
+    APPLIANCE_FRE,
+    APPLIANCE_HO,
+    APPLIANCE_OV,
+    APPLIANCE_REF,
+    APPLIANCE_TD,
+    APPLIANCE_WASH_GROUP,
+    APPLIANCE_WC,
+    APPLIANCE_WD,
+    APPLIANCE_WM,
+    CONF_ENABLE_EXPERIMENTAL,
+    DOMAIN,
+)
+from .debug_utils import redact_id
+from .hood import HOOD_DELAY_TIME_PARAM
+from .hon_commands import (
+    async_send_command,
+    command_param,
+    find_settings_param,
+    get_command,
+    param_range,
+    param_values,
+)
+from .program_options import (
+    HonProgramOptionEntity,
+    option_range,
+)
+from .ref_programs import (
+    REF_FLAG_TO_PARAM,
+    REF_MY_ZONE_PARAM,
+    STOPPROGRAM,
+    active_mode_code,
+    active_mode_codes,
+    my_zone_codes,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, kw_only=True)
+class HonNumberEntityDescription(NumberEntityDescription):
+    """Description of a Haier hOn number.
+
+    - `key` = unique_id suffix (new, no collision with the Tier 2 sensors).
+    - `param` = name of the hOn parameter to read (state) and write (command).
+    - `fallback_min/max/step` = used only if the client does not expose the range on
+      the parameter; normally the REAL range is read at runtime from param_range().
+    - `sparse` = pick the WRITE CHANNEL. False (fridge, freezer, wine cooler, oven)
+      keeps the legacy sender, which applies the value to the resolved
+      settings/setParameters command and transmits EVERY parameter of its group --
+      what those setpoints have always done. True (cooker hood) sends ONE sparse
+      patch through the transactional dispatcher instead, because the hood's
+      `settings` group also carries `clockHH`/`clockMM`/`clockSS`, parameters the
+      device never mirrors into its shadow: nothing can refresh them, they stay at
+      the 0 the schema loaded, and a full-group send resets the hood's clock on every
+      write. The flag is a bool and carries no command name because the command is
+      already resolved per instance by `find_settings_param`.
+    """
+
+    param: str
+    fallback_min: float = 0.0
+    fallback_max: float = 100.0
+    fallback_step: float = 1.0
+    sparse: bool = False
+
+
+def _temp(
+    key: str,
+    param: str,
+    translation_key=None,
+    mode: NumberMode = NumberMode.BOX,
+) -> HonNumberEntityDescription:
+    """Temperature setpoint (C).
+
+    `mode` is the WIDGET, never the validation: whatever it is, the value still has to
+    clear the live parameter's own range and step -- or, for an enum setpoint, the
+    membership check in `async_set_native_value` -- before anything leaves the process.
+    BOX by default so a new caller inherits the behaviour every setpoint has had since
+    Tier 3 shipped; the fridge family opts into SLIDER below, where the device declares
+    a grid small enough for a cursor to be the honest shape.
+    """
+    return HonNumberEntityDescription(
+        key=key,
+        param=param,
+        translation_key=translation_key,
+        device_class=NumberDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        mode=mode,
+        icon="mdi:thermometer",
+    )
+
+
+# Fridge family (REF/FR/FRE): zone superset S7. On the real fridge Z1/Z2/Z3 appear;
+# Z4/UZ/LZ appear only on the models that expose them (gate).
+#
+# SLIDER rather than the shared BOX default (issue #93): the reported HFW7720EWMP
+# declares `tempSelZ1` as range 1..9 step 1 and `tempSelZ2` as range -24..-14 step 1
+# -- nine and eleven whole degrees -- and its owner asked for a discrete pick instead
+# of a free-text field, "like drop down within freezer temperature selection". The app
+# agrees: `dataSourceForDemo` (decomp.txt:2838247-2838365) gives each zone a
+# TEMPERATURE control over the declared grid, keyParam `tempSelZ1` / `tempSelZ2`, never
+# a typed field. A stepped cursor over min..max IS that grid, and it costs nothing
+# else: device class, degrees and unique_id are untouched, so no automation and no
+# history breaks.
+#
+# NOT AUTO: AUTO draws a cursor only while (max - min) / step <= 256 (the frontend's
+# AUTO_MODE_MAX_STEPS, `showNumberSlider` in src/data/number.ts), so the shape of the
+# control would be decided by a frontend constant and by whatever grid the next model
+# declares -- the same entity a cursor for one owner and a text box for the next, with
+# no change here. Every cooling grid we have evidence for is far under that bound (the
+# widest is the Switch Zone -18..+5, 23 steps), so AUTO buys an escape hatch that never
+# fires and pays for it with the guarantee.
+#
+# The scope stops at this table: the wine cooler's `tempSel` is 5..20 step 0.1
+# (decomp.txt:3495741), 151 notches a tenth of a degree apart that no cursor can aim
+# at, and nobody has asked for the oven's 50..280 step 5 to change shape.
+_COOLING_NUMBERS: tuple[HonNumberEntityDescription, ...] = (
+    _temp("target_temp_zone1", "tempSelZ1", mode=NumberMode.SLIDER),
+    _temp("target_temp_zone2", "tempSelZ2", mode=NumberMode.SLIDER),
+    _temp("target_temp_zone3", "tempSelZ3", mode=NumberMode.SLIDER),
+    _temp("target_temp_zone4", "tempSelZ4", mode=NumberMode.SLIDER),
+    _temp("target_temp_upper", "tempSelUZ", mode=NumberMode.SLIDER),
+    _temp("target_temp_lower", "tempSelLZ", mode=NumberMode.SLIDER),
+)
+
+# Wine cellar (WC): per-zone target + generic (S7).
+_WINE_NUMBERS: tuple[HonNumberEntityDescription, ...] = (
+    _temp("target_temp", "tempSel"),
+    _temp("target_temp_zone2", "tempSelZ2"),
+    _temp("target_temp_zone3", "tempSelZ3"),
+)
+
+# Oven (OV): cavity target (S7). Oven-appropriate fallback range (50-280 C step 5,
+# from the app device dictionary) used only when the device does not expose its own
+# range at runtime; a 0-100 default would be wrong for an oven.
+_OVEN_NUMBERS: tuple[HonNumberEntityDescription, ...] = (
+    HonNumberEntityDescription(
+        key="target_temp",
+        param="tempSel",
+        translation_key="target_temp_oven",
+        device_class=NumberDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        mode=NumberMode.BOX,
+        icon="mdi:thermometer",
+        fallback_min=50.0,
+        fallback_max=280.0,
+        fallback_step=5.0,
+    ),
+)
+
+# Cooker hood (HO): how long the fan keeps extracting after the delayed
+# switch-off is armed (issue #83). The unit is PROVEN minutes -- the app renders
+# the value through `moment.duration({minutes: delayTime})` and labels it with its
+# minute abbreviation -- and the bounds (1..99 on the reporting hood) are read live
+# from the parameter, never hardcoded.
+#
+# Its own translation key rather than the wash group's `delay_time`: on a washer
+# that number postpones the START, on a hood it postpones the STOP. Same parameter
+# name, opposite meaning, so sharing the label would mislabel one of the two.
+# CONFIG rather than the default category: it configures the timer the
+# `delay_timer` switch arms, it is not a reading of the hood's current state.
+#
+# SPARSE (see `sparse` on the description above): the hood's `settings` group also
+# carries three clock fields the device never mirrors back, so the full-group send
+# the fridge/oven/wine-cooler setpoints use would zero the hood's clock every time
+# the timer is adjusted.
+_HOOD_NUMBERS: tuple[HonNumberEntityDescription, ...] = (
+    HonNumberEntityDescription(
+        key="delay_time",
+        param=HOOD_DELAY_TIME_PARAM,
+        translation_key="delay_off_time",
+        entity_category=EntityCategory.CONFIG,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        mode=NumberMode.BOX,
+        icon="mdi:timer-sand",
+        fallback_min=1.0,
+        fallback_max=99.0,
+        fallback_step=1.0,
+        sparse=True,
+    ),
+)
+
+# The fridge family, named because two rules below are its alone: the drawer-mode
+# exclusion and the mode-driven write guard.
+_COOLING_TYPES: tuple[str, ...] = (APPLIANCE_REF, APPLIANCE_FR, APPLIANCE_FRE)
+
+NUMBERS: dict[str, tuple[HonNumberEntityDescription, ...]] = {
+    APPLIANCE_REF: _COOLING_NUMBERS,
+    APPLIANCE_FR: _COOLING_NUMBERS,
+    APPLIANCE_FRE: _COOLING_NUMBERS,
+    APPLIANCE_WC: _WINE_NUMBERS,
+    APPLIANCE_OV: _OVEN_NUMBERS,
+    APPLIANCE_HO: _HOOD_NUMBERS,
+}
+
+
+@dataclass(frozen=True, kw_only=True)
+class HonProgramOptionNumberDescription:
+    """A numeric program option (e.g. delayed start) buffered onto startProgram (#35).
+
+    `param` is the startProgram range parameter; min/max/step are read live from it.
+    `types` gates the appliance families.
+    """
+
+    key: str
+    param: str
+    translation_key: str
+    types: tuple[str, ...]
+    icon: str | None = None
+    unit: str | None = None
+
+
+_WASH_GROUP_TYPES = (APPLIANCE_WM, APPLIANCE_WD, APPLIANCE_TD)
+
+# Candidate program-option numbers, capability-gated by the device schema. delayTime is a
+# true range (0..1410 step 30 on the real models); the bounds are read live.
+_PROGRAM_OPTION_NUMBERS: tuple[HonProgramOptionNumberDescription, ...] = (
+    HonProgramOptionNumberDescription(
+        key="delay_time",
+        param="delayTime",
+        translation_key="delay_time",
+        types=_WASH_GROUP_TYPES,
+        icon="mdi:timer-outline",
+        unit=UnitOfTime.MINUTES,
+    ),
+)
+
+
+@dataclass(frozen=True, kw_only=True)
+class HonAirPurifierTimeDescription(NumberEntityDescription):
+    """One field of the air purifier's custom aroma cycle.
+
+    `param` is both the settings parameter written and the attribute read;
+    `intent_field` is the keyword `ap_patch` expects, so the entity never assembles
+    a payload itself.
+    """
+
+    param: str
+    intent_field: str
+
+
+_AROMA_ATTR = "aromaStatus"
+
+# EXPERIMENTAL (gated by CONF_ENABLE_EXPERIMENTAL): the pump-on / pump-off seconds
+# of the custom aroma cycle. Seconds, not minutes: the observed range is 1..3600
+# with the value 60 meaning one minute. The bounds and the step are read from the
+# live parameter, never from a literal here.
+_AP_TIMING_NUMBERS: tuple[HonAirPurifierTimeDescription, ...] = (
+    HonAirPurifierTimeDescription(
+        key="aroma_time_on",
+        param="aromaTimeOn",
+        intent_field="time_on",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=NumberDeviceClass.DURATION,
+        mode=NumberMode.BOX,
+        icon="mdi:spray",
+    ),
+    HonAirPurifierTimeDescription(
+        key="aroma_time_off",
+        param="aromaTimeOff",
+        intent_field="time_off",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=NumberDeviceClass.DURATION,
+        mode=NumberMode.BOX,
+        icon="mdi:spray-bottle",
+    ),
+)
+
+
+def _is_enum_param(param) -> bool:
+    """True if the parameter is an enum (no numeric range), not a range parameter.
+
+    Mirrors param_range()'s internal duck-type: a range parameter exposes min/max/step,
+    an enum does not. We test this directly (instead of `param_values()` being non-empty)
+    because HonParameterRange ALSO has a `.values` property - and on a malformed range it
+    can loop forever - so `.values` cannot discriminate enum from range.
+    """
+    return not all(hasattr(param, attr) for attr in ("min", "max", "step"))
+
+
+def _numeric_enum_set(param) -> list[float] | None:
+    """Sorted distinct NUMERIC values of an enum param, or None.
+
+    Returns None if the enum has no values or ANY value is non-numeric (a mode-style
+    enum like ['low','high'] is not a sensible number control -> the caller skips it
+    rather than fabricating bounds).
+    """
+    out: list[float] = []
+    for value in param_values(param):
+        try:
+            out.append(float(str(value).replace(",", ".")))
+        except (TypeError, ValueError):
+            return None
+    if not out:
+        return None
+    return sorted(set(out))
+
+
+def _enum_step(values: list[float]) -> float:
+    """A step that TILES a discrete numeric set so every member is reachable from min.
+
+    For an integer-valued set this is the gcd of the gaps (e.g. {0,2,5} -> gcd(2,3)=1,
+    so HA offers 0..5 and the membership check rejects 1/3/4; {0,2,4} -> 2, an exact
+    tiling). For a non-integer set it falls back to the smallest gap. With NumberMode.BOX
+    the step is mostly HA-side validation; the authoritative guard is the membership
+    check in async_set_native_value.
+    """
+    if len(values) < 2:
+        return 1.0
+    diffs = [round(b - a, 6) for a, b in zip(values, values[1:])]
+    if all(float(v).is_integer() for v in values):
+        gcd = 0
+        for diff in diffs:
+            gcd = math.gcd(gcd, int(round(diff)))
+        return float(gcd) if gcd else 1.0
+    smallest = min(diffs)
+    return smallest if smallest > 0 else 1.0
+
+
+# Tolerance for matching a UI value to a discrete enum member. A value can drift from
+# the canonical member by float arithmetic (e.g. a step-0.5 set: min + n*step). ONE
+# source for both the membership guard and the snap so they can never disagree.
+_SET_EPSILON = 1e-6
+
+
+def _snap_to_set(value: float, enum_set: list[float]) -> float | None:
+    """Nearest enum member within _SET_EPSILON of `value`, else None (incl. non-float).
+
+    The caller must SERIALIZE this snapped (canonical) member, NOT the raw drifted
+    value -- otherwise a tolerated value like 2.0000001 is sent as "2.0000001" and the
+    cloud enum setter rejects it (clean_value not in the allowed set), surfacing as an
+    opaque command_error instead of being applied (CR#7)."""
+    try:
+        wanted = float(value)
+    except (TypeError, ValueError):
+        return None
+    best: float | None = None
+    best_delta = _SET_EPSILON
+    for allowed in enum_set:
+        delta = abs(wanted - allowed)
+        if delta < best_delta:
+            best, best_delta = allowed, delta
+    return best
+
+
+def _value_in_set(value: float, enum_set: list[float]) -> bool:
+    """Membership in a discrete numeric set with a small float tolerance.
+
+    Thin predicate over _snap_to_set so the guard and the snap share one tolerance."""
+    return _snap_to_set(value, enum_set) is not None
+
+
+def _air_purifier_numbers(
+    coordinator, appliance_id: str, data: dict, client, experimental: bool
+) -> list[NumberEntity]:
+    """The AP custom-aroma timing numbers, or nothing.
+
+    Built here rather than through the NUMBERS table: those rows write a whole
+    settings command through the legacy sender, while every AP write is a sparse
+    patch through the transactional dispatcher.
+    """
+    if not experimental:
+        return []
+    attributes = data.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+    capabilities = discover_capabilities(data.get("appliance"), attributes)
+    if not capabilities.supports_custom_aroma:
+        _LOGGER.debug(
+            "Number debug: no AP timing numbers for id=%s (custom aroma unsupported)",
+            redact_id(appliance_id),
+        )
+        return []
+    entities: list[NumberEntity] = []
+    for description in _AP_TIMING_NUMBERS:
+        # Write half already granted by supports_custom_aroma (it requires BOTH
+        # ranges); this is the read half.
+        if not reports_attribute(attributes, description.param):
+            continue
+        entities.append(
+            HonAirPurifierTimeNumber(
+                coordinator, appliance_id, description, capabilities, client
+            )
+        )
+    _LOGGER.debug(
+        "Number debug: AP id=%s -> %d timing numbers %s",
+        redact_id(appliance_id),
+        len(entities),
+        [e.entity_description.key for e in entities],
+    )
+    return entities
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Create the numbers only for the setpoints the device exposes as writable."""
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry_data["coordinator"]
+    client = entry_data["client"]
+    entities: list[NumberEntity] = []
+    experimental = bool(entry.options.get(CONF_ENABLE_EXPERIMENTAL, False))
+    for appliance_id, data in coordinator.data.items():
+        app_type = data.get("type", "")
+        appliance = data.get("appliance")
+        if app_type == APPLIANCE_AP:
+            entities.extend(
+                _air_purifier_numbers(
+                    coordinator, appliance_id, data, client, experimental
+                )
+            )
+            continue
+        created: list[str] = []
+        # The fridge family only, resolved once per appliance: whether this drawer has
+        # MODES rather than a temperature.
+        drawer_modes = my_zone_codes(appliance) if app_type in _COOLING_TYPES else []
+        for description in NUMBERS.get(app_type, ()):
+            # A drawer that has modes does not also have a temperature (#93). The two
+            # controls were assumed to exclude each other from the data alone -- a model
+            # writes `tempSelZ3` either through `setParameters` or through its drawer
+            # programs -- and the catalogue this design came from disproves it:
+            # `decomp.txt:3495902` declares BOTH a `setParameters.tempSelZ3` enum
+            # ["0","2","5"] and the three programs pinning those same numbers. Left
+            # implicit, such a model gets `select.my_zone_mode` AND
+            # `number.target_temp_zone3`, both writing one register, and the number
+            # publishes 0/2/5 as DEGREES CELSIUS -- "a drawer set to Zero Fresh reads
+            # 0 °C", the exact misreading the My Zone sensor exists to prevent. The
+            # select wins because the value is a MODE: it is the only one of the two that
+            # can say what the register means.
+            if description.param == REF_MY_ZONE_PARAM and drawer_modes:
+                _LOGGER.debug(
+                    "Number debug: skip '%s' (param=%s) id=%s; the drawer has MODES "
+                    "(%s) and select.my_zone_mode owns the register",
+                    description.key,
+                    description.param,
+                    redact_id(appliance_id),
+                    drawer_modes,
+                )
+                continue
+            found = find_settings_param(appliance, description.param)
+            if found is None:
+                continue
+            command_name, param = found
+            # An enum-typed setpoint (e.g. tempSelZ3 = ['0','2','5'] on some multidoor
+            # models) has no min/max/step, so a plain number would fabricate 0..100
+            # bounds and the cloud enum setter would reject every legitimate pick. Derive
+            # the discrete numeric set instead; a non-numeric enum is not a number control
+            # at all -> skip it (gate off) rather than offer fabricated bounds.
+            enum_set: list[float] | None = None
+            if _is_enum_param(param):
+                enum_set = _numeric_enum_set(param)
+                if enum_set is None:
+                    _LOGGER.debug(
+                        "Number debug: skip non-numeric enum setpoint '%s' (param=%s)",
+                        description.key,
+                        description.param,
+                    )
+                    continue
+            entities.append(
+                HonNumber(
+                    coordinator,
+                    appliance_id,
+                    description,
+                    command_name,
+                    param,
+                    client,
+                    enum_set,
+                    mode_driven=app_type in _COOLING_TYPES,
+                )
+            )
+            created.append(description.key)
+        # Writable program-option numbers (#35): delayed start etc., capability-gated on
+        # the wash group's live startProgram schema.
+        opt_created: list[str] = []
+        if app_type in APPLIANCE_WASH_GROUP:
+            for option in _PROGRAM_OPTION_NUMBERS:
+                if app_type not in option.types:
+                    continue
+                if not HonProgramOptionNumber.supports(appliance, option.param):
+                    continue
+                entities.append(
+                    HonProgramOptionNumber(coordinator, appliance_id, option, client)
+                )
+                opt_created.append(option.key)
+        _LOGGER.debug(
+            "Number debug: '%s' (type=%s, id=%s) -> %d/%d numbers %s; option numbers %s",
+            data.get("name", "Haier"),
+            app_type,
+            redact_id(appliance_id),
+            len(created),
+            len(NUMBERS.get(app_type, ())),
+            created,
+            opt_created,
+        )
+    async_add_entities(entities)
+
+
+class HonNumber(HonBaseEntity, NumberEntity):
+    """Haier hOn number: writes a range parameter of the settings command."""
+
+    entity_description: HonNumberEntityDescription
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        description: HonNumberEntityDescription,
+        command_name: str,
+        param,
+        client=None,
+        enum_set: list[float] | None = None,
+        mode_driven: bool = False,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self.entity_description = description
+        self._command_name = command_name
+        self._param = param
+        # Fridge family only: while a boost mode runs, the appliance OWNS this setpoint
+        # and a write from here is discarded without a word. See `async_set_native_value`.
+        self._mode_driven = mode_driven
+        # Discrete numeric set for an enum-typed setpoint (None for a normal range):
+        # fixes the bounds AND the picked value is validated against it before sending.
+        self._enum_set = enum_set
+        self._attr_translation_key = description.translation_key or description.key
+        self._attr_unique_id = f"{appliance_id}_{description.key}"
+        # Range snapshot used as fallback; the live bounds are re-read from the
+        # parameter on each access (the engine rules can change them at runtime). For an
+        # enum the "range" is derived from the discrete set (min/max + a tiling step),
+        # never the fabricated 0..100 default.
+        if enum_set:
+            self._fallback_range = (enum_set[0], enum_set[-1], _enum_step(enum_set))
+            # ...and it keeps the text box whatever its family's description asked for.
+            # The derived grid TILES the set, it does not equal it: `tempSelZ3` =
+            # {0, 2, 5} on the multidoor models (decomp.txt:3495902) yields step
+            # gcd(2, 3) = 1, so min..max step draws six notches of which three
+            # (1, 3, 4) are values the cloud enum setter rejects. A cursor promises that
+            # every notch it offers is reachable; here it would hand the user three that
+            # can only produce `invalid_setpoint`. A box asks for a number and answers a
+            # wrong one with that error, which is the honest shape for a set the device
+            # never published as a grid -- and it is why `_enum_step`'s "with
+            # NumberMode.BOX the step is mostly HA-side validation" still holds. The gate
+            # is "the device declared a SET", not "the set is uneven": even a set that
+            # tiles exactly has bounds that are OUR arithmetic, not the device's. Core's
+            # `NumberEntity.mode` reads `_attr_mode` before `entity_description.mode`, so
+            # this is a per-device override of the family default and nothing else.
+            self._attr_mode = NumberMode.BOX
+        else:
+            self._fallback_range = param_range(param) or (
+                description.fallback_min,
+                description.fallback_max,
+                description.fallback_step,
+            )
+        _LOGGER.debug(
+            "Number debug: init '%s' id=%s param=%s cmd=%s range=%s",
+            redact_id(self._attr_unique_id, appliance_id), redact_id(appliance_id), description.param, command_name, self._live_range,
+        )
+
+    @property
+    def _live_range(self) -> tuple[float, float, float]:
+        """(min, max, step) read from the runtime parameter, fallback to the snapshot."""
+        return param_range(self._param) or self._fallback_range
+
+    @property
+    def native_min_value(self) -> float:
+        return self._live_range[0]
+
+    @property
+    def native_max_value(self) -> float:
+        return self._live_range[1]
+
+    @property
+    def native_step(self) -> float:
+        return self._live_range[2]
+
+    @property
+    def native_value(self) -> float | None:
+        raw = self._get_attr(self.entity_description.param)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            _LOGGER.debug(
+                "Number debug: native_value not numeric for %s raw=%r",
+                self.entity_description.param, raw,
+            )
+            return None
+
+    async def async_set_native_value(self, value: float) -> None:
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        # A mode owns this setpoint right now: refuse, and name the mode.
+        #
+        # This is the app's own rule, not ours. Its REF `setParameters` handler
+        # (decomp.txt:2873608, exported beside `disableActivatedDefaultModes` at
+        # 2873755) reads all four shadow flags and, when ANY is on, sends the four-zero
+        # reset INSTEAD of the setpoint the user moved -- it will not write a temperature
+        # into a mode. The appliance agrees: the reporter's `settings.programRules` pin
+        # `tempSelZ1` to 1 under Super Cool, 5 under Auto-set and 17 under Holiday.
+        #
+        # We cannot see those pins coming. `HonRuleSet._attach_triggers` binds a trigger
+        # only when it is a parameter of the SAME command, and this fridge's `settings`
+        # declares none of the four flags, so the rules never fire here: the range stays
+        # 1..9 while the shadow reports 17, and a slider would clamp its handle to 9 next
+        # to a state that reads 17. Refusing the write is what keeps the control from
+        # promising something the appliance will silently undo; the state itself is left
+        # alone, so the 17 stays visible and true.
+        #
+        # Coarser than the rules strictly require -- Super Cool pins `tempSelZ1` and
+        # leaves `tempSelZ2` at `@tempSelZ2`, untouched -- and coarse on purpose, because
+        # the app draws the line at the same place and because a rule we cannot evaluate
+        # is not a rule we should second-guess.
+        if self._mode_driven and (
+            mode := active_mode_code(self._get_attr)
+        ) is not None:
+            # DO WHAT THE APP DOES, not merely what it refuses.
+            #
+            # `disableActivatedDefaultModes` (decomp.txt:2873600-2873723) builds the
+            # four-zero reset FIRST, then tests the four shadow flags in turn and, on the
+            # first one that is not "0", dispatches that reset INSTEAD of the setpoint.
+            # The temperature is applied only on a later interaction, once the modes are
+            # off. Refusing alone reproduced half of that and left the other half to the
+            # user -- who has to find a switch that only exists when `flag_codes` admits
+            # the flag (offered in `startProgram` AND clearable in `stopProgram`). A
+            # shadow reporting a flag the catalogue does not declare therefore locked
+            # every fridge setpoint behind an error naming a control that is not there,
+            # with no way out of Home Assistant at all.
+            #
+            # Sending the reset removes the dead end at its root: the modes the appliance
+            # reports are cleared from the very control the user touched, exactly as in
+            # the app, whether or not a switch exists for them.
+            # Intersected with what THIS appliance declares. The app hard-codes all
+            # four keys because it builds its own body; our dispatcher validates the
+            # patch against the live schema and raises on a parameter `stopProgram` does
+            # not declare -- correctly, and this fridge family varies: HCW58F18EWMP
+            # declares three (no `intelligenceMode`), the H4F306SDH1 upright one.
+            # Clearing everything clearable is the most of the app's behaviour the
+            # appliance will actually accept.
+            #
+            # But the intersection is only safe once the RUNNING modes are inside it.
+            # `stopProgram` declaring `holidayMode` while `quickModeZ1` is the flag that
+            # is actually on would otherwise send `holidayMode=0`, change nothing, and
+            # still answer "the modes were switched off, set it again" -- an instruction
+            # the user cannot carry out, on every retry. So the running set is checked
+            # first and the whole write is refused when the catalogue cannot cover it.
+            stop = get_command(appliance, STOPPROGRAM)
+            stop_params = getattr(stop, "parameters", None) if stop is not None else None
+            stop_params = stop_params if isinstance(stop_params, dict) else {}
+            running = {
+                REF_FLAG_TO_PARAM[code]
+                for code in active_mode_codes(self._get_attr)
+            }
+            if not running.issubset(stop_params):
+                # At least one RUNNING mode has no off switch in this catalogue, so no
+                # message we could send would clear it. Sending the rest anyway is worse
+                # than refusing: the appliance would keep choosing the temperature, and
+                # the "modes were switched off, set it again" answer below would send
+                # the user round the same loop on every retry, forever. Say instead that
+                # this appliance cannot do it remotely, which is the truth.
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="setpoint_owned_by_mode",
+                )
+            clearable = {
+                flag: "0"
+                for flag in REF_FLAG_TO_PARAM.values()
+                if flag in stop_params
+            }
+            await async_dispatch_patch(
+                self.hass,
+                client,
+                appliance,
+                CommandPatch(
+                    STOPPROGRAM,
+                    clearable,
+                    action="clear_modes_for_setpoint",
+                ),
+            )
+            await self._async_request_command_refresh()
+            # Still an error, because the SETPOINT was not applied and Home Assistant
+            # must not leave the slider sitting on a value the appliance never took.
+            # The message says what happened and what to do, instead of naming a switch.
+            _LOGGER.info(
+                "Number: cleared the active fridge modes before the setpoint "
+                "(mode=%s) id=%s",
+                mode,
+                redact_id(self._appliance_id),
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="setpoint_cleared_modes",
+            )
+        # Enum setpoint: reject a value outside the discrete set up front (clear message,
+        # no pointless cloud round-trip) instead of letting the cloud enum setter raise an
+        # opaque ValueError that would surface as a generic command_error.
+        if self._enum_set is not None:
+            snapped = _snap_to_set(value, self._enum_set)
+            if snapped is None:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_setpoint",
+                    translation_placeholders={
+                        "value": str(value),  # the original drifted value, for the user
+                        "allowed": ", ".join(
+                            str(int(v)) if float(v).is_integer() else str(v)
+                            for v in self._enum_set
+                        ),
+                    },
+                )
+            # Snap to the canonical member so the serialize below emits the exact enum
+            # string ("2", "10.5"), not the drifted "2.0000001" the cloud would reject.
+            value = snapped
+        # ALWAYS send a string: the client's str_to_float does `int(string)` and catches
+        # only ValueError, so a fractional float (5.5) would be truncated to 5
+        # WITHOUT error. The string "5.5" instead stays 5.5 and the range setter
+        # validates the step (rejects off-grid values). Integer -> clean "4" (no "4.0").
+        send_value = str(int(value)) if float(value).is_integer() else str(value)
+        param = self.entity_description.param
+        try:
+            _LOGGER.debug(
+                "Number debug: set %s=%s (cmd=%s sparse=%s) id=%s",
+                param, send_value, self._command_name,
+                self.entity_description.sparse, redact_id(self._appliance_id),
+            )
+            if self.entity_description.sparse:
+                # Cooker hood: this parameter alone plus whatever the live schema
+                # marks mandatory (nothing, on that command). `action` is the label
+                # the command diagnostics record the intent under.
+                await async_dispatch_patch(
+                    self.hass,
+                    client,
+                    appliance,
+                    CommandPatch(
+                        self._command_name,
+                        {param: send_value},
+                        action=f"set_{self.entity_description.key}",
+                    ),
+                )
+            else:
+                # Every other setpoint: unchanged, the whole command group goes out.
+                await async_send_command(
+                    self.hass, client, appliance, self._command_name,
+                    {param: send_value},
+                )
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error("Number: set error %s=%s: %s", param, send_value, err, exc_info=True)
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+
+class HonAirPurifierTimeNumber(HonBaseEntity, NumberEntity):
+    """One second-granularity field of the air purifier's custom aroma cycle.
+
+    EXPERIMENTAL: created only while CONF_ENABLE_EXPERIMENTAL is on. The unique_id
+    does not encode that, so promoting the entity later keeps its identity.
+
+    Only meaningful while the Custom aroma mode is actually running. The write has
+    to repeat `aromaStatus=4` for the device to accept a timing change, so allowing
+    it in any other mode would switch the aroma mode as a side effect; the entity
+    is unavailable outside Custom AND refuses the write rather than trusting the UI
+    to have hidden it. The sibling timing is never included: repeating it would
+    push a stale local value over a concurrent change to the other field.
+    """
+
+    entity_description: HonAirPurifierTimeDescription
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        description: HonAirPurifierTimeDescription,
+        capabilities: AirPurifierCapabilities,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, client)
+        self.entity_description = description
+        self._capabilities = capabilities
+        self._attr_translation_key = description.translation_key or description.key
+        self._attr_unique_id = f"{appliance_id}_{description.key}"
+        # Snapshot of the bounds discovered at setup; the live parameter is re-read
+        # on every access because the engine rules can move min/max/step.
+        self._fallback_range = (
+            capabilities.aroma_time_on
+            if description.intent_field == "time_on"
+            else capabilities.aroma_time_off
+        ) or (1.0, 3600.0, 1.0)
+        _LOGGER.debug(
+            "Number debug: init AP '%s' id=%s param=%s range=%s",
+            description.key,
+            redact_id(appliance_id),
+            description.param,
+            self._fallback_range,
+        )
+
+    @property
+    def _live_range(self) -> tuple[float, float, float]:
+        parameter = command_param(
+            self._appliance,
+            self._capabilities.settings_command,
+            self.entity_description.param,
+        )
+        return param_range(parameter) or self._fallback_range
+
+    @property
+    def native_min_value(self) -> float:
+        return self._live_range[0]
+
+    @property
+    def native_max_value(self) -> float:
+        return self._live_range[1]
+
+    @property
+    def native_step(self) -> float:
+        return self._live_range[2]
+
+    @property
+    def _custom_active(self) -> bool:
+        """Whether Custom is the aroma mode the device currently reports."""
+        raw = self._get_attr(_AROMA_ATTR)
+        return raw is not None and raw_text(raw) == AP_CUSTOM_AROMA
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and environment_available(self._attributes)
+            and self._custom_active
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        raw = self._get_attr(self.entity_description.param)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
+    async def async_set_native_value(self, value: float) -> None:
+        # Both halves of `available` are re-checked, not just the Custom one: the
+        # device can retain aromaStatus=4 while stopped, so a stale-snapshot write
+        # would otherwise reach a purifier that is off.
+        if not environment_available(self._attributes):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="purifier_not_running",
+            )
+        if not self._custom_active:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="aroma_custom_not_active",
+            )
+        appliance = self._appliance
+        client = self._hon_client
+        if not appliance or not client:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="appliance_or_client_unavailable",
+            )
+        try:
+            # Built inside the try so a value the live schema rejects surfaces as
+            # the same localized error as a transport failure.
+            patch = ap_patch(
+                "set_aroma_time",
+                self._capabilities,
+                **{self.entity_description.intent_field: value},
+            )
+            _LOGGER.info(
+                "Number: AP %s -> %s id=%s",
+                self.entity_description.key,
+                value,
+                redact_id(self._appliance_id),
+            )
+            await async_dispatch_patch(self.hass, client, appliance, patch)
+            await self._async_request_command_refresh()
+        except HomeAssistantError:
+            raise
+        except Exception as err:
+            _LOGGER.error(
+                "AP number: %s=%s failed: %s",
+                self.entity_description.param, value, err, exc_info=True,
+            )
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_error",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+
+def _clean_number(value: float) -> str:
+    """'30' not '30.0'; keep the decimals for a non-integer."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+class HonProgramOptionNumber(HonProgramOptionEntity, NumberEntity):
+    """Numeric program option (delayed start) buffered onto the startProgram command;
+    applied + sent on the "Start program" button (no immediate send)."""
+
+    entity_description: HonProgramOptionNumberDescription
+    _attr_mode = NumberMode.BOX
+
+    def __init__(
+        self,
+        coordinator,
+        appliance_id: str,
+        description: HonProgramOptionNumberDescription,
+        client=None,
+    ) -> None:
+        super().__init__(coordinator, appliance_id, description.param, client)
+        self._desc = description
+        self._attr_translation_key = description.translation_key
+        self._attr_unique_id = f"{appliance_id}_opt_{description.key}"
+        if description.icon:
+            self._attr_icon = description.icon
+        if description.unit:
+            self._attr_native_unit_of_measurement = description.unit
+        # Fallback for a device that errored on its first load. The live bounds are read
+        # off the cached param (resolved once by the mixin -- see _live_range); engine
+        # rules can still move min/max/step, so they are read fresh. delayTime is 0..1410
+        # step 30 on the real models.
+        self._fallback_range = option_range(self._option_param) or (0.0, 1410.0, 30.0)
+        _LOGGER.debug(
+            "Number debug: init option number '%s' id=%s param=%s range=%s",
+            redact_id(self._attr_unique_id, appliance_id),
+            redact_id(appliance_id),
+            description.param,
+            self._live_range,
+        )
+
+    @property
+    def _live_range(self) -> tuple[float, float, float]:
+        # Read live min/max/step from the SELECTED program's category, so the range really
+        # tracks the program the user picked (the cached _option_param is the merged superset
+        # across categories, which would validate too permissively -- PR #38). Reading the
+        # ACTIVE command instead, as this did until now, tracked the last STARTED program:
+        # the select buffers its choice and swaps no category, so on a machine idle after a
+        # cycle the bounds offered were the finished program's (issue #98, verified in the
+        # 2026-09-08 debug log: programName='rapid_30_min' on all 7 polls while the pending
+        # program moved through four others). _selected_option_param walks
+        # category -> active -> merged and is a cheap single-object read at each step.
+        rng = option_range(self._selected_option_param())
+        return rng or self._fallback_range
+
+    @property
+    def native_min_value(self) -> float:
+        return self._live_range[0]
+
+    @property
+    def native_max_value(self) -> float:
+        return self._live_range[1]
+
+    @property
+    def native_step(self) -> float:
+        return self._live_range[2]
+
+    def _renderable(self, raw) -> bool:
+        # Same bounds and the same 1e-6 grid tolerance `async_set_native_value` enforces:
+        # a prescription this box could not accept from the user must not be shown as its
+        # value either.
+        try:
+            value = float(raw)
+        except (ValueError, TypeError):
+            return False
+        lo, hi, step = self._live_range
+        if not lo <= value <= hi or step <= 0:
+            return False
+        return abs((value - lo) / step - round((value - lo) / step)) < 1e-6
+
+    @property
+    def native_value(self) -> float | None:
+        raw = self._current_raw()
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
+
+    async def async_set_native_value(self, value: float) -> None:
+        lo, hi, step = self._live_range
+        # Reject out-of-range / off-grid up front (clean message); the engine range setter
+        # would otherwise raise an opaque error only at "Start program".
+        on_grid = step > 0 and abs((value - lo) / step - round((value - lo) / step)) < 1e-6
+        if not (lo <= value <= hi) or not on_grid:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_setpoint",
+                translation_placeholders={
+                    "value": _clean_number(value),
+                    "allowed": (
+                        f"min {_clean_number(lo)} max {_clean_number(hi)} "
+                        f"step {_clean_number(step)}"
+                    ),
+                },
+            )
+        self._buffer(_clean_number(value))

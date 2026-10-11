@@ -1,0 +1,15 @@
+{
+  "domain": "addhon",
+  "name": "Haier hOn - addhOn",
+  "codeowners": [
+    "@tis24dev"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/tis24dev/addhOn",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/tis24dev/addhOn/issues",
+  "requirements": [
+    "awsiotsdk>=1.21.0"
+  ],
+  "version": "5.25.0"
+}

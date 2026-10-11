@@ -1,0 +1,17 @@
+peppa_pig_on_bedroom_tv:
+  sequence:
+  - action: remote.turn_on
+    target:
+      entity_id: remote.tv_badroom
+    data:
+      activity: vnd.youtube://watch?v=y4s7U5UxY9Y
+  - delay:
+      seconds: 2
+  - action: remote.turn_on
+    target:
+      entity_id: remote.tv_badroom
+    data:
+      activity: vnd.youtube://watch?v=y4s7U5UxY9Y
+  mode: single
+  alias: 'Peppa pig on Bedroom tv '
+  description: ''

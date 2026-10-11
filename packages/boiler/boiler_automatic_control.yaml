@@ -1,0 +1,426 @@
+automation:
+  - id: boiler_control_by_trv_demand
+    alias: Boiler control by TRV demand
+    mode: queued
+    max: 20
+
+    triggers:
+      - trigger: state
+        entity_id:
+          - climate.controller_children_room_3_82_termostat
+          - climate.controller_diner_place_1_100_termostat
+          - climate.controller_underfloor_4_92_termostat
+          - climate.controller_living_room_5_71_termostat
+          - climate.spalnia_bedroom_controller_2_termostat
+          - climate.controller_bathroom_6_92_termostat
+          - climate.controller_balcony_7_87_termostat
+          - climate.controller_hall_8_74_termostat
+        attribute: hvac_action
+        id: trv_change
+
+      - trigger: state
+        entity_id:
+          - sensor.spalnia_velair1_controller_children_room_3_82_termostat_override
+          - sensor.spalnia_velair1_controller_diner_place_1_100_termostat_override
+          - sensor.spalnia_velair1_controller_underfloor_4_92_termostat_override
+          - sensor.spalnia_velair1_controller_living_room_5_71_termostat_override
+          - sensor.spalnia_velair1_controller_bedroom_2_72_termostat_override
+          - sensor.spalnia_velair1_controller_bathroom_6_92_termostat_override
+          - sensor.spalnia_velair1_controller_balcony_7_87_termostat_override
+          - sensor.spalnia_velair1_controller_hall_8_74_termostat_override
+        id: velair_boost_change
+
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.boiler_single_trv_delay
+        id: timer_finished
+
+      - trigger: event
+        event_type: boiler_control_recheck
+        id: recheck
+
+    actions:
+      - condition: state
+        entity_id: input_boolean.boiler_automation_enabled
+        state: "on"
+
+      - variables:
+          heat_count: >
+            {% set trvs = [
+              'climate.controller_children_room_3_82_termostat',
+              'climate.controller_diner_place_1_100_termostat',
+              'climate.controller_underfloor_4_92_termostat',
+              'climate.controller_living_room_5_71_termostat',
+              'climate.spalnia_bedroom_controller_2_termostat',
+              'climate.controller_bathroom_6_92_termostat',
+              'climate.controller_balcony_7_87_termostat',
+              'climate.controller_hall_8_74_termostat'
+            ] %}
+
+            {% set ns = namespace(count=0) %}
+
+            {% for trv in trvs %}
+              {% if state_attr(trv, 'hvac_action') == 'heating' %}
+                {% set ns.count = ns.count + 1 %}
+              {% endif %}
+            {% endfor %}
+
+            {{ ns.count }}
+
+          boost_heat_count: >
+            {% set pairs = {"climate.controller_children_room_3_82_termostat": "sensor.spalnia_velair1_controller_children_room_3_82_termostat_override", "climate.controller_diner_place_1_100_termostat": "sensor.spalnia_velair1_controller_diner_place_1_100_termostat_override", "climate.controller_underfloor_4_92_termostat": "sensor.spalnia_velair1_controller_underfloor_4_92_termostat_override", "climate.controller_living_room_5_71_termostat": "sensor.spalnia_velair1_controller_living_room_5_71_termostat_override", "climate.spalnia_bedroom_controller_2_termostat": "sensor.spalnia_velair1_controller_bedroom_2_72_termostat_override", "climate.controller_bathroom_6_92_termostat": "sensor.spalnia_velair1_controller_bathroom_6_92_termostat_override", "climate.controller_balcony_7_87_termostat": "sensor.spalnia_velair1_controller_balcony_7_87_termostat_override", "climate.controller_hall_8_74_termostat": "sensor.spalnia_velair1_controller_hall_8_74_termostat_override"} %}
+            {% set ns = namespace(count=0) %}
+            {% for trv, sensor in pairs.items() %}
+              {% if state_attr(trv, 'hvac_action') == 'heating' and is_state(sensor, 'boost') %}
+                {% set ns.count = ns.count + 1 %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.count }}
+
+          heating_names: >
+            {% set trvs = {
+              'climate.controller_children_room_3_82_termostat': 'Children controller',
+              'climate.controller_diner_place_1_100_termostat': 'Dinner place controller',
+              'climate.controller_underfloor_4_92_termostat': 'Underfloor controller',
+              'climate.controller_living_room_5_71_termostat': 'Living room controller',
+              'climate.spalnia_bedroom_controller_2_termostat': 'Bad room controller',
+              'climate.controller_bathroom_6_92_termostat': 'Bathroom controller',
+              'climate.controller_balcony_7_87_termostat': 'Balcony controller',
+              'climate.controller_hall_8_74_termostat': 'Hall controller'
+            } %}
+
+            {% set ns = namespace(names=[]) %}
+
+            {% for entity_id, name in trvs.items() %}
+              {% if state_attr(entity_id, 'hvac_action') == 'heating' %}
+                {% set ns.names = ns.names + [name] %}
+              {% endif %}
+            {% endfor %}
+
+            {{ ns.names | join(', ') }}
+
+          single_trv: >
+            {% if heat_count | int == 1 %}
+              {{ heating_names }}
+            {% else %}
+              {{ '' }}
+            {% endif %}
+
+      - choose:
+          # ==================================================
+          # BOILER IS CURRENTLY ON
+          # ==================================================
+          - conditions:
+              - condition: state
+                entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+                state: "on"
+
+            sequence:
+              - choose:
+                  # Last TRV stopped heating
+                  - conditions:
+                      - condition: template
+                        value_template: >
+                          {{
+                            heat_count | int == 0
+                            and is_state(
+                              'input_boolean.boiler_cycle_active',
+                              'on'
+                            )
+                          }}
+
+                    sequence:
+                      - variables:
+                          runtime_formatted: >
+                            {% set started =
+                              state_attr(
+                                'input_datetime.boiler_started_at',
+                                'timestamp'
+                              )
+                            %}
+
+                            {% if started is number %}
+                              {% set total =
+                                ((as_timestamp(now()) - started) / 60) | int
+                              %}
+                              {% set hours = total // 60 %}
+                              {% set minutes = total % 60 %}
+
+                              {{ hours }} h {{ '%02d' | format(minutes) }} min
+                            {% else %}
+                              0 h 00 min
+                            {% endif %}
+
+                          finished_start_reason: >
+                            {{ states('input_text.boiler_start_reason') }}
+
+                          finished_trvs: >
+                            {{ states('input_text.boiler_cycle_trvs') }}
+
+                      # Disable cycle first so our own switch OFF
+                      # cannot be interpreted as an active cycle.
+                      - action: input_boolean.turn_off
+                        target:
+                          entity_id: input_boolean.boiler_cycle_active
+
+                      - action: switch.turn_off
+                        target:
+                          entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+
+                      - action: logbook.log
+                        data:
+                          name: Boiler Ariston
+                          entity_id: input_text.boiler_history
+                          message: >-
+                            OFF · Runtime {{ runtime_formatted }}
+                            · {{ finished_start_reason }}
+                            · TRVs involved: {{ finished_trvs }}
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_cycle_trvs
+                        data:
+                          value: ""
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_start_reason
+                        data:
+                          value: ""
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_waiting_trv
+                        data:
+                          value: ""
+
+                default:
+                  # While boiler is running remember every TRV
+                  # which participated in this cycle.
+                  - condition: state
+                    entity_id: input_boolean.boiler_cycle_active
+                    state: "on"
+
+                  - variables:
+                      existing_cycle: >
+                        {{ states('input_text.boiler_cycle_trvs') }}
+
+                      updated_cycle: >
+                        {% set ns = namespace(names=[]) %}
+
+                        {% for name in existing_cycle.split(', ') %}
+                          {% if name | trim %}
+                            {% set ns.names = ns.names + [name | trim] %}
+                          {% endif %}
+                        {% endfor %}
+
+                        {% for name in heating_names.split(', ') %}
+                          {% if
+                            name | trim
+                            and name | trim not in ns.names
+                          %}
+                            {% set ns.names = ns.names + [name | trim] %}
+                          {% endif %}
+                        {% endfor %}
+
+                        {{ ns.names | join(', ') }}
+
+                  - action: input_text.set_value
+                    target:
+                      entity_id: input_text.boiler_cycle_trvs
+                    data:
+                      value: "{{ updated_cycle }}"
+
+          # ==================================================
+          # BOILER IS CURRENTLY OFF
+          # ==================================================
+          - conditions:
+              - condition: state
+                entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+                state: "off"
+
+            sequence:
+              - choose:
+                  # ------------------------------------------------
+                  # No TRV needs heat
+                  # ------------------------------------------------
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ heat_count | int == 0 }}"
+
+                    sequence:
+                      - action: timer.cancel
+                        target:
+                          entity_id: timer.boiler_single_trv_delay
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_waiting_trv
+                        data:
+                          value: ""
+
+                      - action: input_boolean.turn_off
+                        target:
+                          entity_id: input_boolean.boiler_cycle_active
+
+                  # ------------------------------------------------
+                  # 2+ TRVs OR a heating TRV with Velair Boost: immediate start
+                  # ------------------------------------------------
+                  - conditions:
+                      - condition: template
+                        value_template: >
+                          {{
+                            (heat_count | int >= 2 or boost_heat_count | int > 0)
+                            and is_state(
+                              'input_boolean.boiler_cycle_active',
+                              'off'
+                            )
+                          }}
+
+                    sequence:
+                      - action: timer.cancel
+                        target:
+                          entity_id: timer.boiler_single_trv_delay
+
+                      - action: input_datetime.set_datetime
+                        target:
+                          entity_id: input_datetime.boiler_started_at
+                        data:
+                          datetime: >
+                            {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_cycle_trvs
+                        data:
+                          value: "{{ heating_names }}"
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_start_reason
+                        data:
+                          value: >-
+                            Immediate {{ 'Velair Boost' if boost_heat_count | int > 0 else '2+ TRVs' }} start by {{ heating_names }}
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_waiting_trv
+                        data:
+                          value: ""
+
+                      - action: input_boolean.turn_on
+                        target:
+                          entity_id: input_boolean.boiler_cycle_active
+
+                      - action: switch.turn_on
+                        target:
+                          entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+
+                      - action: logbook.log
+                        data:
+                          name: Boiler Ariston
+                          entity_id: input_text.boiler_history
+                          message: >-
+                            ON · Immediate {{ 'Velair Boost' if boost_heat_count | int > 0 else '2+ TRVs' }} · {{ heating_names }}
+
+                  # ------------------------------------------------
+                  # One TRV survived the full 10-minute delay
+                  # ------------------------------------------------
+                  - conditions:
+                      - condition: template
+                        value_template: >
+                          {{
+                            trigger.id == 'timer_finished'
+                            and heat_count | int == 1
+                            and states(
+                              'input_text.boiler_waiting_trv'
+                            ) == single_trv
+                            and is_state(
+                              'input_boolean.boiler_cycle_active',
+                              'off'
+                            )
+                          }}
+
+                    sequence:
+                      - action: input_datetime.set_datetime
+                        target:
+                          entity_id: input_datetime.boiler_started_at
+                        data:
+                          datetime: >
+                            {{ now().strftime('%Y-%m-%d %H:%M:%S') }}
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_cycle_trvs
+                        data:
+                          value: "{{ single_trv }}"
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_start_reason
+                        data:
+                          value: >-
+                            Started after 10 min delay by {{ single_trv }}
+
+                      - action: input_text.set_value
+                        target:
+                          entity_id: input_text.boiler_waiting_trv
+                        data:
+                          value: ""
+
+                      - action: input_boolean.turn_on
+                        target:
+                          entity_id: input_boolean.boiler_cycle_active
+
+                      - action: switch.turn_on
+                        target:
+                          entity_id: switch.kukhnia_kotel_sonoff_mini_d_wi_fi_smart_switch
+
+                      - action: logbook.log
+                        data:
+                          name: Boiler Ariston
+                          entity_id: input_text.boiler_history
+                          message: >-
+                            ON · {{ single_trv }} · after 10 min delay
+
+                  # ------------------------------------------------
+                  # Exactly one TRV, start/restart 10-minute timer
+                  # ------------------------------------------------
+                  - conditions:
+                      - condition: template
+                        value_template: >
+                          {{
+                            heat_count | int == 1
+                            and trigger.id in ['trv_change', 'recheck', 'velair_boost_change']
+                            and is_state(
+                              'input_boolean.boiler_cycle_active',
+                              'off'
+                            )
+                          }}
+
+                    sequence:
+                      - choose:
+                          - conditions:
+                              - condition: template
+                                value_template: >
+                                  {{
+                                    states(
+                                      'input_text.boiler_waiting_trv'
+                                    ) != single_trv
+                                    or trigger.id == 'recheck'
+                                    or not is_state('timer.boiler_single_trv_delay', 'active')
+                                  }}
+
+                            sequence:
+                              - action: input_text.set_value
+                                target:
+                                  entity_id: input_text.boiler_waiting_trv
+                                data:
+                                  value: "{{ single_trv }}"
+
+                              - action: timer.start
+                                target:
+                                  entity_id: timer.boiler_single_trv_delay
+                                data:
+                                  duration: "00:10:00"

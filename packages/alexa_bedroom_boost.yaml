@@ -1,0 +1,22 @@
+template:
+- switch:
+  - name: Bedroom Boost
+    unique_id: bedroom_boost_alexa
+    state: '{{ is_state(''sensor.spalnia_velair1_controller_bedroom_2_72_termostat_override'',
+      ''boost'') }}'
+    turn_on:
+    - action: velair.boost
+      data:
+        entity_id: climate.spalnia_bedroom_controller_2_termostat
+        temperature: 24
+        duration_minutes: 30
+        hvac_mode: heat
+    turn_off:
+    - action: velair.cancel_boost
+      data:
+        entity_id: climate.spalnia_bedroom_controller_2_termostat
+emulated_hue:
+  entities:
+    switch.bedroom_boost:
+      name: Bedroom Boost
+      hidden: false

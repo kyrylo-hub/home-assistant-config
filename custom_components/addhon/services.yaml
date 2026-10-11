@@ -1,0 +1,29 @@
+refresh:
+
+set_log_level:
+  fields:
+    level:
+      required: true
+      default: debug
+      example: debug
+      selector:
+        select:
+          options:
+            - "debug"
+            - "info"
+            - "warning"
+            - "error"
+
+set_mqtt_log_level:
+  fields:
+    level:
+      required: true
+      default: debug
+      example: debug
+      selector:
+        select:
+          options:
+            - "debug"
+            - "info"
+            - "warning"
+            - "error"

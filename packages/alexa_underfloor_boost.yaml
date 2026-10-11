@@ -1,0 +1,22 @@
+template:
+  - switch:
+      - name: Underfloor Boost
+        unique_id: underfloor_boost_alexa
+        state: "{{ is_state('sensor.spalnia_velair1_controller_underfloor_4_92_termostat_override', 'boost') }}"
+        turn_on:
+          - action: velair.boost
+            data:
+              entity_id: climate.controller_underfloor_4_92_termostat
+              temperature: 25
+              duration_minutes: 30
+              hvac_mode: heat
+        turn_off:
+          - action: velair.cancel_boost
+            data:
+              entity_id: climate.controller_underfloor_4_92_termostat
+
+emulated_hue:
+  entities:
+    switch.underfloor_boost:
+      name: Underfloor Boost
+      hidden: false

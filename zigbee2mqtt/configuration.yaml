@@ -1,0 +1,58 @@
+version: 5
+mqtt:
+  base_topic: zigbee2mqtt
+  server: mqtt://core-mosquitto:1883
+  user: 2MQTT
+  password: 2MQTT
+serial:
+  port: /dev/serial/by-id/usb-SONOFF_SONOFF_Dongle_Plus_MG24_d60f927456a3ef11abcc44bd61ce3355-if00-port0
+  adapter: ember
+  baudrate: 115200
+  rtscts: false
+advanced:
+  log_level: info
+  channel: 25
+  network_key:
+    - 150
+    - 164
+    - 171
+    - 204
+    - 93
+    - 145
+    - 136
+    - 110
+    - 11
+    - 226
+    - 75
+    - 169
+    - 8
+    - 67
+    - 96
+    - 231
+  pan_id: 39678
+  ext_pan_id:
+    - 78
+    - 177
+    - 161
+    - 248
+    - 22
+    - 166
+    - 250
+    - 227
+  enable_external_js: false
+frontend:
+  enabled: true
+  port: 8099
+homeassistant:
+  enabled: true
+devices:
+  '0xc09b9efffe4b1e3a':
+    friendly_name: controller Bedroom 2mqtt
+  '0xa4c1387fc1c3989d':
+    friendly_name: switcher Moes Main
+  '0x842712fffe485df3':
+    friendly_name: switcher hall remote
+  '0x00158d0000fd1e23':
+    friendly_name: Door mi
+  '0xf4b3b1fffe488713':
+    friendly_name: Badroom_Sensor_2__72

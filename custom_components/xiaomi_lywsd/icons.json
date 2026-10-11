@@ -1,0 +1,59 @@
+{
+  "services": {
+    "sync_time": {
+      "service": "mdi:clock-check-outline"
+    },
+    "read_state": {
+      "service": "mdi:refresh"
+    }
+  },
+  "entity": {
+    "button": {
+      "sync_time": {
+        "default": "mdi:clock-check-outline"
+      }
+    },
+    "select": {
+      "display_units": {
+        "default": "mdi:temperature-celsius"
+      },
+      "time_format": {
+        "default": "mdi:clock-time-four-outline"
+      }
+    },
+    "sensor": {
+      "temperature": {
+        "default": "mdi:thermometer"
+      },
+      "humidity": {
+        "default": "mdi:water-percent"
+      },
+      "battery": {
+        "default": "mdi:battery"
+      },
+      "last_sync": {
+        "default": "mdi:clock-outline"
+      },
+      "next_sync": {
+        "default": "mdi:clock-fast"
+      },
+      "clock_drift": {
+        "default": "mdi:clock-edit-outline"
+      },
+      "failure_count": {
+        "default": "mdi:alert-circle"
+      },
+      "last_failure": {
+        "default": "mdi:clock-alert"
+      },
+      "connection_duration": {
+        "default": "mdi:timer-outline"
+      }
+    },
+    "binary_sensor": {
+      "connectivity": {
+        "default": "mdi:bluetooth-connect"
+      }
+    }
+  }
+}

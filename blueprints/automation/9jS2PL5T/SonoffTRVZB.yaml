@@ -1,0 +1,110 @@
+blueprint:
+  name: TRV External Sensor & Window Sync
+  description: 'Updates a TRV''s external temperature number entity from a room sensor  to
+    prevent internal heat bias. Also turns the Climate entity off if  any specified
+    windows/doors are open.
+
+    '
+  domain: automation
+  input:
+    room_temp_sensor:
+      name: Room Temperature Sensor
+      description: The external sensor providing the actual room temperature.
+      selector:
+        entity:
+          domain:
+          - sensor
+          device_class:
+          - temperature
+          multiple: false
+          reorder: false
+    trv_calibration_number:
+      name: TRV External Temp Number
+      description: The entity on the TRV where the external temperature is written.
+      selector:
+        entity:
+          domain:
+          - number
+          multiple: false
+          reorder: false
+    trv_climate_entity:
+      name: TRV Climate Entity
+      description: The main climate entity to turn off when windows are open.
+      selector:
+        entity:
+          domain:
+          - climate
+          multiple: false
+          reorder: false
+    window_sensors:
+      name: Window & Door Sensors
+      description: Select all binary sensors (windows/doors) that should stop heating
+        when open.
+      default: []
+      selector:
+        entity:
+          domain:
+          - binary_sensor
+          multiple: true
+          reorder: false
+  source_url: https://gist.github.com/9jS2PL5T/009b24d383adc7840b1914de06ce0c06
+variables:
+  room_temp_sensor: !input room_temp_sensor
+  window_sensors: !input window_sensors
+  trv_climate_entity: !input trv_climate_entity
+mode: restart
+trigger:
+- platform: state
+  entity_id: !input room_temp_sensor
+  to:
+- platform: time_pattern
+  minutes: /15
+- platform: state
+  entity_id: !input window_sensors
+  to:
+condition:
+- condition: not
+  conditions:
+  - condition: state
+    entity_id: !input room_temp_sensor
+    state: unavailable
+  - condition: state
+    entity_id: !input room_temp_sensor
+    state: unknown
+action:
+- choose:
+  - conditions:
+    - condition: state
+      entity_id: !input trv_climate_entity
+      state: heat
+    sequence:
+    - action: number.set_value
+      target:
+        entity_id: !input trv_calibration_number
+      data:
+        value: '{{ states(room_temp_sensor) | float }}'
+- choose:
+  - conditions:
+    - condition: template
+      value_template: "{{ expand(window_sensors) \n   | selectattr('state', 'eq',
+        'on') \n   | list \n   | count > 0 }}\n"
+    sequence:
+    - action: climate.turn_off
+      target:
+        entity_id: !input trv_climate_entity
+  - conditions:
+    - condition: template
+      value_template: "{{ trigger.platform == 'state' and\n   trigger.entity_id in
+        window_sensors and\n   trigger.to_state is not none and\n   trigger.to_state.state
+        == 'off' }}\n"
+    - condition: template
+      value_template: "{{ (window_sensors | count > 0) and\n   ((expand(window_sensors)\n
+        \   | selectattr('state', 'eq', 'on')\n    | list\n    | count) == 0) }}\n"
+    - condition: state
+      entity_id: !input trv_climate_entity
+      state: 'off'
+    sequence:
+    - action: climate.turn_on
+      target:
+        entity_id: !input trv_climate_entity
+  default: []
